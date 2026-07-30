@@ -5,7 +5,6 @@ import * as viewer from "./pdfViewer.js";
 import * as store from "./store.js";
 import { renderPaperList } from "./paperList.js";
 import { renderPmidBox } from "./pmidBox.js";
-import { renderTabs } from "./modelTabs.js";
 import { renderFeature } from "./featureEditor.js";
 import { openAddPdfModal } from "./addPdfModal.js";
 
@@ -234,13 +233,7 @@ function renderRight() {
   }
 
   const modelId = activeModelId(p);
-  const tabs = renderTabs(runs, modelId, S.config.features.length, id => {
-    S.activeModelByPmid[p.pmid] = id; S.cardIndex = 0; renderRight(); recomputeMatches();
-  });
-  if (tabs) pane.appendChild(tabs);
-
   const run = runs[modelId];
-  pane.appendChild(runMeta(run, p));
   setViewToggle(run);
 
   const cards = el("div"); cards.id = "featurecards";
@@ -283,17 +276,6 @@ function viewToggle(run) {
     wrap.appendChild(b);
   });
   return wrap;
-}
-
-function runMeta(run, p) {
-  const m = el("div", "run-meta");
-  m.appendChild(el("span", "st-" + run.status, run.status.toUpperCase()));
-  m.appendChild(el("span", null, run.source === "import" ? "imported" : `engine: ${run.parseEngine}`));
-  if (run.error) { const e = el("span", null, run.error); e.style.color = "var(--bad)"; e.style.maxWidth = "180px"; e.style.overflow = "hidden"; e.style.textOverflow = "ellipsis"; e.style.whiteSpace = "nowrap"; e.title = run.error; m.appendChild(e); }
-  const retry = el("button", "retry", "re-run");
-  retry.onclick = () => runExtraction(p, [run.modelId], true, null, retry);
-  m.appendChild(retry);
-  return m;
 }
 
 function renderFeatureCards(run) {
@@ -357,22 +339,12 @@ function activateCurrentCard(run) {
 
 function onFeatureEdit(run) {
   store.scheduleSave(run.pmid, run.modelId, run.features);
-  // refresh confirm count + tab dots + left list without a full rebuild
+  // refresh confirm count + left list without a full rebuild — nothing in the
+  // extract panel depends on a single feature edit (it only reflects which
+  // models have a run, not confirm state within one).
   let confirmed = 0;
   for (const f of Object.values(run.features)) if (f.confirmed) confirmed++;
   $("#featstat").textContent = `${confirmed}/${S.config.features.length}✓`;
-  refreshTabsAndList();
-}
-
-function refreshTabsAndList() {
-  const p = activePaper();
-  if (!p || !p.pmid) return;
-  const runs = S.runsByPmid[p.pmid] || {};
-  const bar = document.querySelector(".tabbar");
-  const fresh = renderTabs(runs, activeModelId(p), S.config.features.length, id => {
-    S.activeModelByPmid[p.pmid] = id; S.cardIndex = 0; renderRight(); recomputeMatches();
-  });
-  if (bar && fresh) bar.replaceWith(fresh);
   renderLeft();
 }
 
@@ -530,10 +502,48 @@ async function confirmPmid(uid, pmid, source) {
   }
 }
 
+// Per-model run summary for the expanded checkbox list's run-dot indicator —
+// the only place "has this model already run" is surfaced.
+function runDot(run, featureCount) {
+  if (!run) return { cls: "none", frac: "not run" };
+  if (run.status === "failed") return { cls: "failed", frac: "failed" };
+  const feats = Object.values(run.features || {});
+  const confirmed = feats.filter(f => f.confirmed).length;
+  const total = feats.length || featureCount;
+  const cls = confirmed >= total ? "done" : "partial";
+  return { cls, frac: `${confirmed}/${total} confirmed` };
+}
+
+// Inline dropdown for the collapsed single-line header: pick which already-run
+// model's curation to view (models with no run yet are listed but disabled).
+// Lives inside .lab, CSS-hidden while expanded (see styles.css).
+function modelSelect(p, runs) {
+  const modelId = activeModelId(p);
+  const sel = el("select", "model-select");
+  for (const m of S.config.models) {
+    const has = !!runs[m.slug];
+    const o = el("option", null, m.label + (has ? "" : " — not run yet"));
+    o.value = m.slug;
+    o.disabled = !has;
+    if (m.slug === modelId) o.selected = true;
+    sel.appendChild(o);
+  }
+  // .lab's own onclick toggles collapse — interacting with the dropdown must not.
+  sel.addEventListener("mousedown", e => e.stopPropagation());
+  sel.addEventListener("click", e => e.stopPropagation());
+  sel.onchange = () => {
+    S.activeModelByPmid[p.pmid] = sel.value; S.cardIndex = 0; renderRight(); recomputeMatches();
+  };
+  return sel;
+}
+
 function extractPanel(p) {
   const panel = el("div", "extract-panel" + (S.extractCollapsed ? " collapsed" : ""));
+  const runs = S.runsByPmid[p.pmid] || {};
+
   const head = el("div", "lab");
   head.appendChild(el("span", null, "Run AI extraction"));
+  head.appendChild(modelSelect(p, runs));
   head.appendChild(el("span", "caret", "▼"));
   head.onclick = () => {
     S.extractCollapsed = !panel.classList.contains("collapsed");
@@ -543,7 +553,6 @@ function extractPanel(p) {
   panel.appendChild(head);
 
   const body = el("div", "extract-body");
-  const runs = S.runsByPmid[p.pmid] || {};
 
   const picks = el("div", "model-picks");
   const checks = [];
@@ -551,7 +560,11 @@ function extractPanel(p) {
     const lab = el("label");
     const cb = el("input"); cb.type = "checkbox"; cb.value = m.slug;
     cb.checked = !runs[m.slug];                 // pre-check models not yet run
+    const stat = runDot(runs[m.slug], S.config.features.length);
+    const dot = el("span", "run-dot " + stat.cls);
+    dot.title = stat.frac;
     lab.appendChild(cb);
+    lab.appendChild(dot);
     lab.appendChild(el("span", null, m.label));
     if (!m.supportsStructuredOutput) lab.appendChild(el("span", "so", "prompt-only"));
     picks.appendChild(lab); checks.push(cb);
@@ -584,7 +597,14 @@ function extractPanel(p) {
   btn.onclick = () => {
     const models = checks.filter(c => c.checked).map(c => c.value);
     if (!models.length) { toast("Pick at least one model"); return; }
-    runExtraction(p, models, false, sel.value, btn);
+    const rerunning = models.filter(id => runs[id]);
+    const atRisk = rerunning.filter(id =>
+      Object.values(runs[id].features).some(f => f.confirmed || f.editedAt));
+    if (atRisk.length) {
+      const names = atRisk.map(id => (S.config.models.find(m => m.slug === id) || {}).label || id).join(", ");
+      if (!window.confirm(`Re-running ${names} will overwrite confirmed/edited values with fresh AI output. Continue?`)) return;
+    }
+    runExtraction(p, models, rerunning.length > 0, sel.value, btn);
   };
   panel.appendChild(body);
   return panel;
