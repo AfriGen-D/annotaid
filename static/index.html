@@ -14,7 +14,8 @@
 <body>
 
 <header>
-  <span class="mark">annot<em>aid</em></span>
+  <button class="icon-btn" id="docsToggle" title="Show / hide documents" aria-label="Toggle documents">☰</button>
+  <span class="mark">Annot<em>Aid</em></span>
   <span class="sub" id="subtitle">biocuration · local</span>
   <span class="spacer"></span>
   <span class="gstat"><span id="globalstat">—</span><span class="l">papers</span></span>
@@ -58,7 +59,9 @@
   </section>
 
   <section class="col features">
-    <div class="col-head"><span>Extraction</span><span id="featstat"></span></div>
+    <div class="col-resizer" id="featResizer" title="Drag to resize"></div>
+    <div id="extractpanel"></div>
+    <div class="col-head"><span>Extraction</span><span id="viewtoggle"></span><span id="featstat"></span></div>
     <div class="col-body" id="rightpane">
       <div class="empty-feat">Select a paper to view its AI-extracted features. Click a value to
         highlight its supporting evidence in the PDF.</div>
