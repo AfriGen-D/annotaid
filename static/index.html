@@ -19,9 +19,7 @@
   <span class="sub" id="subtitle">biocuration · local</span>
   <span class="spacer"></span>
   <span class="gstat"><span id="globalstat">—</span><span class="l">papers</span></span>
-  <label class="btn load">Add PDF
-    <input type="file" id="filein" multiple accept=".pdf,application/pdf">
-  </label>
+  <button class="btn load" id="addPdfBtn">Add PDF</button>
   <label class="btn" id="importbtn">Import JSON
     <input type="file" id="importin" multiple accept=".json,application/json" hidden>
   </label>
@@ -70,6 +68,7 @@
 </main>
 
 <div id="toast"></div>
+<div id="addPdfModal" class="modal-overlay" hidden></div>
 <script type="module" src="/js/main.js"></script>
 </body>
 </html>

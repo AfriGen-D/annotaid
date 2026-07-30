@@ -35,6 +35,8 @@ export const api = {
   confirmPmid: (uid, pmid, source) =>
     jpost(`/api/papers/${encodeURIComponent(uid)}/pmid`, { pmid, source }),
 
+  fetchByPmid: (pmid) => jpost("/api/papers/fetch-by-pmid", { pmid }),
+
   pdfUrl: (ident) => `/api/pdf/${encodeURIComponent(ident)}`,
 
   extract: (pmid, models, promptId, parseEngine, force) =>

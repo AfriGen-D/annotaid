@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from urllib.parse import parse_qs, urlparse
 
-from . import export, importer, papers as papers_mod, responses, util
+from . import export, importer, ncbi, papers as papers_mod, responses, util
 from .extraction import run_extraction
 
 
@@ -46,6 +46,27 @@ def h_upload(ctx, req, params, body):
         paper = papers_mod.store_upload(ctx.store, body, filename)
     except papers_mod.PaperError as exc:
         return responses.send_error_json(req, 400, str(exc))
+    responses.send_json(req, paper, 201)
+
+
+def h_fetch_pmid(ctx, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    pmid = str(data.get("pmid", "")).strip()
+    if not pmid.isdigit():
+        return responses.send_error_json(req, 400, "PMID must be numeric")
+    try:
+        pdf_bytes = ncbi.fetch_fulltext_pdf(
+            pmid, ctx.secrets.ncbi_api_key, ctx.secrets.unpaywall_email
+        )
+    except ncbi.NcbiError as exc:
+        return responses.send_error_json(req, 502, str(exc))
+    try:
+        paper = papers_mod.store_and_confirm_from_pmid(ctx.store, pdf_bytes, pmid)
+    except papers_mod.PaperError as exc:
+        return responses.send_error_json(req, 409, str(exc))
     responses.send_json(req, paper, 201)
 
 
@@ -163,6 +184,7 @@ def register(router):
     router.add("POST", "/api/state", h_save_state)
     router.add("GET", "/api/papers", h_papers_list)
     router.add("POST", "/api/papers", h_upload)
+    router.add("POST", "/api/papers/fetch-by-pmid", h_fetch_pmid)
     router.add("POST", "/api/papers/{uid}/pmid", h_confirm_pmid)
     router.add("GET", "/api/pdf/{id}", h_pdf)
     router.add("POST", "/api/extract", h_extract)

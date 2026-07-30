@@ -7,6 +7,7 @@ import { renderPaperList } from "./paperList.js";
 import { renderPmidBox } from "./pmidBox.js";
 import { renderTabs } from "./modelTabs.js";
 import { renderFeature } from "./featureEditor.js";
+import { openAddPdfModal } from "./addPdfModal.js";
 
 const S = {
   config: null,
@@ -25,9 +26,11 @@ async function boot() {
   viewer.init({
     onActive: name => highlightActiveCard(name),
     onMatches: results => applyMatches(results),
+    onSelection: sel => handleTextSelection(sel),
   });
   wireHeader();
   wireLayout();
+  $("#pages").addEventListener("scroll", hideSelectionBtn);
 
   try { await store.flushPending(); } catch (_) {}
   S.config = await api.config();
@@ -51,9 +54,8 @@ function activePaper() { return paper(S.activeUid); }
 
 /* ---------------- header wiring ---------------- */
 function wireHeader() {
-  $("#filein").addEventListener("change", async e => {
-    const files = [...e.target.files]; e.target.value = "";
-    await uploadPdfs(files);
+  $("#addPdfBtn").addEventListener("click", () => {
+    openAddPdfModal({ onFetch: fetchByPmid, onFiles: uploadPdfs });
   });
   $("#importbtn").addEventListener("click", () => $("#importin").click());
   $("#importin").addEventListener("change", async e => {
@@ -126,6 +128,16 @@ async function uploadPdfs(files) {
   toast(`${files.length} PDF(s) added`);
 }
 
+async function fetchByPmid(pmid) {
+  const p = await api.fetchByPmid(pmid);   // throws with a user-facing .message on failure
+  const i = S.papers.findIndex(x => x.uid === p.uid);
+  if (i >= 0) S.papers[i] = p; else S.papers.push(p);
+  renderLeft(); updateGlobalStat();
+  selectPaper(p.uid);
+  toast(`Fetched PMID ${pmid} from PubMed Central`);
+  return p;
+}
+
 async function importJson(files) {
   const items = [];
   for (const f of files) {
@@ -195,6 +207,7 @@ function activeModelId(p) {
 }
 
 function renderRight() {
+  hideSelectionBtn();
   const pane = $("#rightpane");
   pane.innerHTML = "";
   const p = activePaper();
@@ -259,6 +272,7 @@ function viewToggle(run) {
     const b = el("button", "vt-btn" + (S.viewMode === mode ? " on" : ""), label);
     b.onclick = () => {
       if (S.viewMode === mode) return;
+      hideSelectionBtn();
       S.viewMode = mode;
       try { localStorage.setItem("annotaid:viewMode", mode); } catch (_) {}
       wrap.querySelectorAll(".vt-btn").forEach(x => x.classList.remove("on"));
@@ -277,7 +291,7 @@ function runMeta(run, p) {
   m.appendChild(el("span", null, run.source === "import" ? "imported" : `engine: ${run.parseEngine}`));
   if (run.error) { const e = el("span", null, run.error); e.style.color = "var(--bad)"; e.style.maxWidth = "180px"; e.style.overflow = "hidden"; e.style.textOverflow = "ellipsis"; e.style.whiteSpace = "nowrap"; e.title = run.error; m.appendChild(e); }
   const retry = el("button", "retry", "re-run");
-  retry.onclick = () => runExtraction(p, [run.modelId], true);
+  retry.onclick = () => runExtraction(p, [run.modelId], true, null, retry);
   m.appendChild(retry);
   return m;
 }
@@ -328,6 +342,7 @@ function cardNav(run, feats) {
 }
 
 function gotoCard(run, idx) {
+  hideSelectionBtn();
   const feats = S.config.features.filter(f => run.features[f.name]);
   S.cardIndex = Math.max(0, Math.min(feats.length - 1, idx));
   renderFeatureCards(run);
@@ -388,6 +403,99 @@ function applyMatches(results) {
   }
   renderFeatureCards(run);
   if (changed) store.scheduleSave(run.pmid, run.modelId, run.features);
+}
+
+/* ---------------- PDF selection -> evidence (card view only) ---------------- */
+let selBtn = null;
+
+function currentCardFeature(run) {
+  const feats = S.config.features.filter(f => run.features[f.name]);
+  return feats[S.cardIndex] || null;
+}
+
+let listViewSelectHintShown = false;
+
+function handleTextSelection(sel) {
+  if (!sel) { listViewSelectHintShown = false; hideSelectionBtn(); return; }
+  if (S.viewMode !== "card") {
+    // Selecting text here used to be a silent no-op outside Card view — easy to
+    // mistake for "this feature doesn't work" and fall back to typing the quote
+    // into a value field by hand instead.
+    if (!listViewSelectHintShown) {
+      toast("Switch to Card view to add a PDF selection as evidence");
+      listViewSelectHintShown = true;
+    }
+    hideSelectionBtn();
+    return;
+  }
+  const p = activePaper();
+  if (!p || !p.pmid) { hideSelectionBtn(); return; }
+  const run = (S.runsByPmid[p.pmid] || {})[activeModelId(p)];
+  if (!run) { hideSelectionBtn(); return; }
+  const fdef = currentCardFeature(run);
+  if (!fdef) { hideSelectionBtn(); return; }
+  showSelectionBtn(sel, fdef, run);
+}
+
+function showSelectionBtn(sel, fdef, run) {
+  if (!selBtn) {
+    selBtn = el("button", "sel-add-btn");
+    document.body.appendChild(selBtn);
+  }
+  selBtn.textContent = `+ Add to "${fdef.name}"`;
+  const top = Math.max(6, sel.rect.top - 38);
+  selBtn.style.top = top + "px";
+  selBtn.style.left = Math.max(6, sel.rect.left) + "px";
+  selBtn.hidden = false;
+  selBtn.onclick = () => {
+    hideSelectionBtn();
+    window.getSelection().removeAllRanges();
+    applyHighlightToValue(sel.text, fdef, run);
+  };
+}
+
+// Sets the curated value from a PDF highlight (or appends to it, for list
+// features) — this is the actual answer, not the evidence quote (that stays
+// whatever the AI extracted, the immutable aiValue counterpart).
+function applyHighlightToValue(rawText, fdef, run) {
+  const feat = run.features[fdef.name];
+  const text = rawText.trim();
+  if (!feat || !text) return;
+
+  if (fdef.type === "boolean") {
+    toast(`"${fdef.name}" is a true/false feature — use the toggle instead of a highlight`);
+    return;
+  }
+
+  if (fdef.type === "enum") {
+    const match = (fdef.enumValues || []).find(v => v.toLowerCase() === text.toLowerCase());
+    if (!match) { toast(`"${text.slice(0, 40)}" doesn't match any allowed value for "${fdef.name}"`); return; }
+    feat.value = match;
+  } else if (fdef.type.startsWith("array")) {
+    if (!Array.isArray(feat.value)) feat.value = [];
+    if (fdef.type === "array<number>") {
+      const n = Number(text);
+      if (Number.isNaN(n)) { toast(`"${text.slice(0, 40)}" isn't a valid number for "${fdef.name}"`); return; }
+      feat.value.push(n);
+    } else {
+      feat.value.push(text);
+    }
+  } else if (fdef.type === "number") {
+    const n = Number(text);
+    if (Number.isNaN(n)) { toast(`"${text.slice(0, 40)}" isn't a valid number for "${fdef.name}"`); return; }
+    feat.value = n;
+  } else {
+    feat.value = text;
+  }
+  feat.present = true;
+
+  renderFeatureCards(run);
+  store.scheduleSave(run.pmid, run.modelId, run.features);
+  toast(`Added to "${fdef.name}"`);
+}
+
+function hideSelectionBtn() {
+  if (selBtn) selBtn.hidden = true;
 }
 
 function highlightActiveCard(name) {
@@ -469,6 +577,10 @@ function extractPanel(p) {
   sel.onchange = syncWarn; syncWarn();
   body.appendChild(warn);
 
+  const progress = el("div", "extract-progress");
+  progress.appendChild(el("div", "extract-progress-bar"));
+  body.appendChild(progress);
+
   btn.onclick = () => {
     const models = checks.filter(c => c.checked).map(c => c.value);
     if (!models.length) { toast("Pick at least one model"); return; }
@@ -478,9 +590,28 @@ function extractPanel(p) {
   return panel;
 }
 
+// Toast alone faded (2.6s) long before an extraction (up to a minute+) finished,
+// so the only signal was a quiet button-text change. Make it hard to miss:
+// pulsing accent button + spinner + an indeterminate progress bar.
+function setExtractingUi(btn, busy) {
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.classList.toggle("extracting", busy);
+  btn.innerHTML = "";
+  if (busy) {
+    btn.appendChild(el("span", "btn-spinner"));
+    btn.appendChild(document.createTextNode("Extracting…"));
+  } else {
+    btn.textContent = btn.dataset.idleLabel || "Extract";
+  }
+  const progress = document.querySelector(".extract-progress");
+  if (progress) progress.classList.toggle("on", busy);
+}
+
 async function runExtraction(p, models, force, parseEngine, btn) {
   const engine = parseEngine || S.config.defaults.parseEngine;
-  if (btn) { btn.disabled = true; btn.textContent = "Extracting…"; }
+  if (btn) btn.dataset.idleLabel = btn.textContent;
+  setExtractingUi(btn, true);
   toast(`Extracting ${models.length} model(s)… this can take a minute`);
   try {
     const { runs } = await api.extract(p.pmid, models, S.config.defaults.promptId, engine, !!force);
@@ -494,7 +625,7 @@ async function runExtraction(p, models, force, parseEngine, btn) {
   } catch (err) {
     toast(`Extraction failed: ${err.message}`);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Extract"; }
+    setExtractingUi(btn, false);
   }
 }
 

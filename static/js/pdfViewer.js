@@ -20,12 +20,14 @@ const state = {
   onActive: null,     // (name) => void
   onNav: null,        // (label) => void
   onMatches: null,    // (results) => void  (fires on initial compute AND zoom reflow)
+  onSelection: null,  // ({text, rect} | null) => void  (rect is viewport-relative)
 };
 
-export function init({ onActive, onNav, onMatches } = {}) {
+export function init({ onActive, onNav, onMatches, onSelection } = {}) {
   state.onActive = onActive;
   state.onNav = onNav;
   state.onMatches = onMatches;
+  state.onSelection = onSelection;
   document.getElementById("nextVal").onclick = () => step(1);
   document.getElementById("prevVal").onclick = () => step(-1);
   document.getElementById("zoomIn").onclick = () => rezoom(0.15);
@@ -35,6 +37,23 @@ export function init({ onActive, onNav, onMatches } = {}) {
     if (e.key === "ArrowRight") { step(1); e.preventDefault(); }
     if (e.key === "ArrowLeft") { step(-1); e.preventDefault(); }
   });
+  document.addEventListener("selectionchange", handleSelectionChange);
+}
+
+// User can drag-select text in the (invisible, overlaid) text layer — native
+// browser selection, styled via ::selection. Reports {text, rect} so the app
+// can offer "add to current feature" (card view only; see main.js).
+function handleSelectionChange() {
+  if (!state.onSelection) return;
+  const sel = window.getSelection();
+  const text = sel && sel.rangeCount ? sel.toString().trim() : "";
+  if (!text) { state.onSelection(null); return; }
+  const range = sel.getRangeAt(0);
+  const container = pagesEl();
+  if (!container.contains(range.commonAncestorContainer)) { state.onSelection(null); return; }
+  const rect = range.getBoundingClientRect();
+  if (rect.width < 1 && rect.height < 1) { state.onSelection(null); return; }
+  state.onSelection({ text, rect });
 }
 
 export async function load(url) {

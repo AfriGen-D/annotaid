@@ -19,6 +19,8 @@ pip install -r requirements.txt          # just jsonschema
 # API key lives server-side only. Put OPENROUTER_API_KEY in a dotenv-style key file.
 # By default the repo-root .keys is used (the same one the scripts/ CLIs read).
 #   OPENROUTER_API_KEY=sk-or-v1-...
+#   NCBI_API_KEY=...        optional — raises the E-utils rate limit (3 -> 10 req/s)
+#   UNPAYWALL_EMAIL=...     optional — enables the Unpaywall finder in "Add PDF -> Fetch by PubMed ID"
 
 python run.py                             # serves http://127.0.0.1:8765
 ```
@@ -30,16 +32,24 @@ Flags: `--port`, `--host`, `--config`, `--keys`, `--data-dir`, `--static-dir`,
 
 ## Workflow
 
-1. **Add PDF** — upload one or more PDFs. Each gets a content-hash id so re-uploads dedupe.
-2. **Confirm PMID** — the filename stem is prefilled *only* if it is purely numeric; it is never
-   auto-committed. Confirm (or type) the real PubMed ID. Duplicate PMIDs are rejected.
+1. **Add PDF** — two ways, both behind the "Add PDF" button:
+   - **Fetch by PubMed ID** — enter a PMID; the backend verifies it on PubMed, then tries PMC Open
+     Access and other open-access sources (`server/ncbi.py`) for the full-text PDF. Since the PMID
+     came from PubMed itself, it's stored pre-confirmed. Most subscription-only papers aren't
+     retrievable this way — the modal shows why and points at the Upload tab instead.
+   - **Upload** — drag-and-drop or file-dialog upload of PDF(s) you already have. Each gets a
+     content-hash id so re-uploads dedupe.
+2. **Confirm PMID** — for uploaded (not fetched) PDFs: the filename stem is prefilled *only* if it
+   is purely numeric; it is never auto-committed. Confirm (or type) the real PubMed ID. Duplicate
+   PMIDs are rejected.
 3. **Extract** — pick model(s) and a PDF parse engine (`pdf-text` free, `mistral-ocr` paid,
    `native`) and run. The backend calls OpenRouter, validates/repairs every reply against the
    declared feature types, and stores one run per (paper × model).
 4. **Verify** — per feature: the AI value is prefilled and editable; the original `aiValue` is kept
    immutably beside it (unchanged = "human agrees with AI", edited = a correction). Click a value's
    evidence quote to scroll+highlight it in the PDF. A failed match is declared ("not found in PDF")
-   — it is never silently shown as no-evidence.
+   — it is never silently shown as no-evidence. In **Card view**, you can also select text directly
+   in the PDF and click the floating button to set it as that feature's evidence.
 5. **Confirm** each value with the tick. Work autosaves to disk (debounced); a browser refresh never
    loses confirmed work.
 6. **Download** at any point:

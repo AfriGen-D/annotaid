@@ -51,7 +51,7 @@ def confirm_pmid(store: Store, uid: str, pmid: str, source: str) -> dict:
     pmid = str(pmid).strip()
     if not pmid.isdigit():
         raise PaperError("PMID must be numeric")
-    if source not in ("prefill-confirmed", "manual"):
+    if source not in ("prefill-confirmed", "manual", "pmid-fetch"):
         source = "manual"
 
     taken = store.pmid_taken_by(pmid)
@@ -63,3 +63,39 @@ def confirm_pmid(store: Store, uid: str, pmid: str, source: str) -> dict:
     store.set_pmid(uid, pmid)
     store.save_paper(paper)
     return paper
+
+
+def store_and_confirm_from_pmid(store: Store, pdf_bytes: bytes, pmid: str) -> dict:
+    """Used by the "fetch by PMID" flow: since the PMID was just verified against
+    PubMed itself (server/ncbi.py), it is pre-confirmed here rather than asking
+    the curator to re-confirm what they just typed.
+    """
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise PaperError("fetched file is not a PDF (missing %PDF header)")
+    pmid = str(pmid).strip()
+    uid = util.sha256_hex(pdf_bytes)[:12]
+    store.save_pdf(uid, pdf_bytes)
+
+    existing = store.load_paper(uid)
+    if existing:
+        if existing.get("pmid") and existing["pmid"] != pmid:
+            raise PaperError(f"this PDF is already stored under PMID {existing['pmid']}")
+        if existing.get("pmid") == pmid:
+            return existing
+        return confirm_pmid(store, uid, pmid, "pmid-fetch")
+
+    taken = store.pmid_taken_by(pmid)
+    if taken:
+        raise PaperError(f"PMID {pmid} is already assigned to another paper")
+
+    paper = {
+        "uid": uid,
+        "pmid": None,
+        "suggestedPmid": pmid,
+        "filename": f"PMID{pmid}.pdf",
+        "pmidSource": None,
+        "addedAt": util.iso_now(),
+        "models": [],
+    }
+    store.save_paper(paper)
+    return confirm_pmid(store, uid, pmid, "pmid-fetch")
