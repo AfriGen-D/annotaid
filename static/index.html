@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>annotaid — biocuration gold-standard tool</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317282B'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='%239C7B2E' font-family='serif' font-style='italic'%3Ea%3C/text%3E%3C/svg%3E">
+<script src="/vendor/pdfjs/pdf.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+
+<header>
+  <span class="mark">annot<em>aid</em></span>
+  <span class="sub" id="subtitle">biocuration · local</span>
+  <span class="spacer"></span>
+  <span class="gstat"><span id="globalstat">—</span><span class="l">papers</span></span>
+  <label class="btn load">Add PDF
+    <input type="file" id="filein" multiple accept=".pdf,application/pdf">
+  </label>
+  <label class="btn" id="importbtn">Import JSON
+    <input type="file" id="importin" multiple accept=".json,application/json" hidden>
+  </label>
+  <div class="menu-wrap">
+    <button class="btn primary" id="downloadbtn">Download ▾</button>
+    <div class="menu" id="downloadmenu" hidden>
+      <button data-fmt="csv">Download CSV <span class="mhint">paste into sheet</span></button>
+      <button data-fmt="json">Download audit JSON <span class="mhint">benchmarking</span></button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="col docs">
+    <div class="col-head"><span>Documents</span><span id="doccount"></span></div>
+    <div class="col-body" id="doclist"></div>
+  </section>
+
+  <section class="col viewer">
+    <div class="viewer-toolbar">
+      <button id="prevVal" title="Previous evidence (←)">← prev</button>
+      <button id="nextVal" title="Next evidence (→)">next →</button>
+      <span class="navlabel" id="navlabel">—</span>
+      <span class="spacer"></span>
+      <button id="zoomOut">−</button>
+      <span id="zoomlabel" class="navlabel">100%</span>
+      <button id="zoomIn">+</button>
+    </div>
+    <div id="pages"></div>
+    <div class="placeholder" id="viewerPlaceholder">
+      <div class="big">No document loaded</div>
+      <div class="hint">Add one or more <code>.pdf</code> files to begin. Each paper gets a
+        confirmed PubMed ID, then AI extractions you verify against the source.</div>
+    </div>
+  </section>
+
+  <section class="col features">
+    <div class="col-head"><span>Extraction</span><span id="featstat"></span></div>
+    <div class="col-body" id="rightpane">
+      <div class="empty-feat">Select a paper to view its AI-extracted features. Click a value to
+        highlight its supporting evidence in the PDF.</div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

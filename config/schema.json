@@ -1,0 +1,75 @@
+{
+  "features": [
+    {
+      "name": "phenotype",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The trait(s), disease(s), or condition(s) studied."
+    },
+    {
+      "name": "geographical_region",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The geographic region(s) the study population is from."
+    },
+    {
+      "name": "ethnicity",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The ethnicity/population descriptor of the participants as the authors describe it (e.g. 'Black South African')."
+    },
+    {
+      "name": "mixed_population",
+      "type": "boolean",
+      "nullable": true,
+      "description": "true if the study sample combines participants from more than one distinct population/ethnicity/country; false if it is a single population. Absent if the text does not make this determinable."
+    },
+    {
+      "name": "origin",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The country or countries the participants are from (participant ancestry/recruitment origin, NOT the institution's location if different)."
+    }
+  ],
+  "models": [
+    {
+      "slug": "openai/gpt-oss-20b:free",
+      "label": "openai_gpt-oss",
+      "supportsStructuredOutput": true
+    },
+    {
+      "slug": "deepseek/deepseek-v4-flash",
+      "label": "deepseek_deepseek-v4",
+      "supportsStructuredOutput": true
+    }
+  ],
+  "prompts": [
+    {
+      "label": "default",
+      "file": "prompt.default.txt"
+    }
+  ],
+  "parseEngines": ["pdf-text", "mistral-ocr", "native"],
+  "defaults": {
+    "parseEngine": "pdf-text"
+  },
+  "export": {
+    "csv": {
+      "rowScope": "paper-model",
+      "includeHeaderRow": true,
+      "arrayDelimiter": "; ",
+      "boolTrue": "TRUE",
+      "boolFalse": "FALSE",
+      "nullText": "",
+      "columns": [
+        { "header": "pubmed_id", "source": "pmid" },
+        { "header": "model", "source": "modelId" },
+        { "header": "phenotype", "source": "phenotype" },
+        { "header": "geographical_region", "source": "geographical_region" },
+        { "header": "ethnicity", "source": "ethnicity" },
+        { "header": "mixed_population", "source": "mixed_population" },
+        { "header": "origin", "source": "origin" }
+      ]
+    }
+  }
+}

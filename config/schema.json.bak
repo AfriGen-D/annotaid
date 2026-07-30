@@ -1,0 +1,80 @@
+{
+  "features": [
+    {
+      "name": "phenotype",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The trait(s), disease(s), or condition(s) studied."
+    },
+    {
+      "name": "geographical_region",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The geographic region(s) the study population is from."
+    },
+    {
+      "name": "ethnicity",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The ethnicity/population descriptor of the participants as the authors describe it (e.g. 'Black South African')."
+    },
+    {
+      "name": "mixed_population",
+      "type": "boolean",
+      "nullable": true,
+      "description": "true if the study sample combines participants from more than one distinct population/ethnicity/country; false if it is a single population. Absent if the text does not make this determinable."
+    },
+    {
+      "name": "origin",
+      "type": "array<string>",
+      "nullable": true,
+      "description": "The country or countries the participants are from (participant ancestry/recruitment origin, NOT the institution's location if different)."
+    }
+  ],
+  "models": [
+    {
+      "slug": "anthropic/claude-sonnet-5",
+      "label": "claude_sonnet5",
+      "supportsStructuredOutput": true
+    },
+    {
+      "slug": "openai/gpt-5.6",
+      "label": "gpt56",
+      "supportsStructuredOutput": true
+    },
+    {
+      "slug": "google/gemini-3.5-flash",
+      "label": "gemini35flash",
+      "supportsStructuredOutput": true
+    }
+  ],
+  "prompts": [
+    {
+      "label": "default",
+      "file": "prompt.default.txt"
+    }
+  ],
+  "parseEngines": ["pdf-text", "mistral-ocr", "native"],
+  "defaults": {
+    "parseEngine": "pdf-text"
+  },
+  "export": {
+    "csv": {
+      "rowScope": "paper-model",
+      "includeHeaderRow": true,
+      "arrayDelimiter": "; ",
+      "boolTrue": "TRUE",
+      "boolFalse": "FALSE",
+      "nullText": "",
+      "columns": [
+        { "header": "pubmed_id", "source": "pmid" },
+        { "header": "model", "source": "modelId" },
+        { "header": "phenotype", "source": "phenotype" },
+        { "header": "geographical_region", "source": "geographical_region" },
+        { "header": "ethnicity", "source": "ethnicity" },
+        { "header": "mixed_population", "source": "mixed_population" },
+        { "header": "origin", "source": "origin" }
+      ]
+    }
+  }
+}
