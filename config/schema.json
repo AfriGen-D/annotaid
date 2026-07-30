@@ -1,34 +1,34 @@
 {
   "features": [
     {
-      "name": "phenotype",
-      "type": "array<string>",
+      "name": "p_value",
+      "type": "number",
       "nullable": true,
-      "description": "The trait(s), disease(s), or condition(s) studied."
+      "description": "The reported p-value for the study's primary association/result (e.g. 5.2e-8). If multiple are reported, use the primary/most significant one stated in the text."
     },
     {
-      "name": "geographical_region",
+      "name": "countries",
       "type": "array<string>",
       "nullable": true,
-      "description": "The geographic region(s) the study population is from."
+      "description": "The country or countries the study participants are from (participant ancestry/recruitment origin, NOT the institution's location if different)."
     },
     {
-      "name": "ethnicity",
-      "type": "array<string>",
+      "name": "population_description",
+      "type": "string",
       "nullable": true,
-      "description": "The ethnicity/population descriptor of the participants as the authors describe it (e.g. 'Black South African')."
+      "description": "Free-text description of the study population as the authors describe it (e.g. ethnicity, ancestry, or cohort description such as 'Black South African')."
+    },
+    {
+      "name": "sample_size",
+      "type": "number",
+      "nullable": true,
+      "description": "The number of participants in the study sample (total N used for the primary analysis)."
     },
     {
       "name": "mixed_population",
       "type": "boolean",
       "nullable": true,
       "description": "true if the study sample combines participants from more than one distinct population/ethnicity/country; false if it is a single population. Absent if the text does not make this determinable."
-    },
-    {
-      "name": "origin",
-      "type": "array<string>",
-      "nullable": true,
-      "description": "The country or countries the participants are from (participant ancestry/recruitment origin, NOT the institution's location if different)."
     }
   ],
   "models": [
@@ -41,6 +41,10 @@
       "slug": "deepseek/deepseek-v4-flash",
       "label": "deepseek_deepseek-v4",
       "supportsStructuredOutput": true
+    },
+    {
+      "slug": "anthropic/claude-opus-4.7",
+      "label": "anthropic_claude-opus-4.7"
     }
   ],
   "prompts": [
@@ -64,11 +68,11 @@
       "columns": [
         { "header": "pubmed_id", "source": "pmid" },
         { "header": "model", "source": "modelId" },
-        { "header": "phenotype", "source": "phenotype" },
-        { "header": "geographical_region", "source": "geographical_region" },
-        { "header": "ethnicity", "source": "ethnicity" },
-        { "header": "mixed_population", "source": "mixed_population" },
-        { "header": "origin", "source": "origin" }
+        { "header": "p_value", "source": "p_value" },
+        { "header": "countries", "source": "countries" },
+        { "header": "population_description", "source": "population_description" },
+        { "header": "sample_size", "source": "sample_size" },
+        { "header": "mixed_population", "source": "mixed_population" }
       ]
     }
   }
