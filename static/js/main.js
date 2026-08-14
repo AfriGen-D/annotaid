@@ -6,7 +6,7 @@ import * as store from "./store.js";
 import { renderPaperList } from "./paperList.js";
 import { renderPmidBox } from "./pmidBox.js";
 import { renderFeature } from "./featureEditor.js";
-import { openAddPdfModal } from "./addPdfModal.js";
+import { openAddPapersModal } from "./addPapersModal.js";
 
 const S = {
   config: null,
@@ -15,7 +15,6 @@ const S = {
   activeUid: null,
   activeModelByPmid: {},          // pmid -> modelId
   partialByFeature: {},           // featureName -> bool (transient, this render)
-  extractCollapsed: false,        // "Run AI extraction" panel collapsed?
   viewMode: "list",               // "list" | "card" — extraction sidebar layout
   cardIndex: 0,                   // active feature index in card mode
 };
@@ -54,7 +53,17 @@ function activePaper() { return paper(S.activeUid); }
 /* ---------------- header wiring ---------------- */
 function wireHeader() {
   $("#addPdfBtn").addEventListener("click", () => {
-    openAddPdfModal({ onFetch: fetchByPmid, onFiles: uploadPdfs });
+    openAddPapersModal({
+      onFetchOne: fetchOnePmid,
+      onBatchDone: finishPmidBatch,
+      onUpload: uploadPdfs,
+      onConfirmPmid: confirmPaperPmid,
+      onExtract: runExtraction,
+      onFinish: finishAddPapers,
+      findByPmid: pmid => S.papers.find(p => p.pmid === pmid) || null,
+      config: S.config,
+      concurrency: (S.config.limits && S.config.limits.pmidFetchConcurrency) || 3,
+    });
   });
   $("#importbtn").addEventListener("click", () => $("#importin").click());
   $("#importin").addEventListener("change", async e => {
@@ -77,7 +86,6 @@ function wireLayout() {
 
   const fw = parseInt(localStorage.getItem("annotaid:featw") || "", 10);
   if (fw >= 300 && fw <= 680) mainEl.style.setProperty("--feat-w", fw + "px");
-  S.extractCollapsed = localStorage.getItem("annotaid:extractCollapsed") === "1";
   S.viewMode = localStorage.getItem("annotaid:viewMode") === "card" ? "card" : "list";
 
   const dt = $("#docsToggle");
@@ -112,29 +120,45 @@ function downloadFile(url) {
   const a = el("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
 }
 
-async function uploadPdfs(files) {
-  let firstNew = null;
+// opts.pmid: set when the curator came from a failed "fetch by PMID" row — it
+// prefills that paper's confirm box (it is still never auto-confirmed).
+async function uploadPdfs(files, opts) {
+  const pmid = opts && opts.pmid;
+  const added = [];
   for (const f of files) {
     try {
-      const p = await api.uploadPdf(f);
+      const p = await api.uploadPdf(f, pmid);
       const i = S.papers.findIndex(x => x.uid === p.uid);
       if (i >= 0) S.papers[i] = p; else S.papers.push(p);
-      if (!firstNew) firstNew = p.uid;
+      added.push(p);
     } catch (err) { toast(`Upload failed: ${err.message}`); }
   }
   renderLeft(); updateGlobalStat();
-  if (firstNew) selectPaper(firstNew);
-  toast(`${files.length} PDF(s) added`);
+  if (added.length) toast(`${added.length} PDF(s) added`);
+  return added;   // the stepper carries these into the confirm/extract step
 }
 
-async function fetchByPmid(pmid) {
-  const p = await api.fetchByPmid(pmid);   // throws with a user-facing .message on failure
+// One PMID of a batch. Deliberately does NOT select or toast — the modal owns
+// per-id feedback and finishPmidBatch does the one summary toast at the end.
+async function fetchOnePmid(pmid, opts) {
+  const p = await api.fetchByPmid(pmid, opts);   // throws with a user-facing .message
   const i = S.papers.findIndex(x => x.uid === p.uid);
   if (i >= 0) S.papers[i] = p; else S.papers.push(p);
-  renderLeft(); updateGlobalStat();
-  selectPaper(p.uid);
-  toast(`Fetched PMID ${pmid} from PubMed Central`);
+  renderLeft(); updateGlobalStat();              // papers show up in the sidebar as they land
   return p;
+}
+
+function finishPmidBatch({ added, duplicate, failed, cancelled }) {
+  // Aborting the browser fetch does not stop the server thread: it finishes the
+  // download and stores the paper regardless, so resync rather than guess.
+  if (cancelled) reloadState();
+  // Never steal the curator's open paper mid-batch.
+  if (added.length && !S.activeUid) selectPaper(added[0].uid);
+  const bits = [];
+  if (added.length) bits.push(`${added.length} added`);
+  if (duplicate) bits.push(`${duplicate} already in library`);
+  if (failed) bits.push(`${failed} failed`);
+  if (bits.length) toast(bits.join(" · "));
 }
 
 async function importJson(files) {
@@ -226,7 +250,7 @@ function renderRight() {
 
   const runs = S.runsByPmid[p.pmid] || {};
   if (!Object.keys(runs).length) {
-    pane.appendChild(el("div", "no-runs", "No AI runs yet. Pick model(s) above and click Extract, or Import existing outputs."));
+    pane.appendChild(el("div", "no-runs", "No AI runs yet. Run extraction from “Add Paper(s)”, or Import existing outputs."));
     $("#featstat").textContent = "";
     setViewToggle(null);
     return;
@@ -250,13 +274,14 @@ function setViewToggle(run) {
   if (run) slot.appendChild(viewToggle(run));
 }
 
-// The "Run AI extraction" panel sits above the column header (index.html #extractpanel),
-// outside the scrolling body. Shown for any confirmed paper, cleared otherwise.
+// The model switcher sits above the column header (index.html #extractpanel),
+// outside the scrolling body, so it survives #rightpane rebuilds.
 function setExtractPanel(p) {
   const slot = $("#extractpanel");
   if (!slot) return;
   slot.innerHTML = "";
-  if (p && p.pmid) slot.appendChild(extractPanel(p));
+  const bar = p && p.pmid ? modelBar(p) : null;
+  if (bar) slot.appendChild(bar);
 }
 
 function viewToggle(run) {
@@ -502,20 +527,18 @@ async function confirmPmid(uid, pmid, source) {
   }
 }
 
-// Per-model run summary for the expanded checkbox list's run-dot indicator —
-// the only place "has this model already run" is surfaced.
-function runDot(run, featureCount) {
-  if (!run) return { cls: "none", frac: "not run" };
-  if (run.status === "failed") return { cls: "failed", frac: "failed" };
-  const feats = Object.values(run.features || {});
-  const confirmed = feats.filter(f => f.confirmed).length;
-  const total = feats.length || featureCount;
-  const cls = confirmed >= total ? "done" : "partial";
-  return { cls, frac: `${confirmed}/${total} confirmed` };
+// Same call, but for the stepper: it renders its own inline error next to the
+// row, so this one rethrows instead of toasting and never steals the selection.
+async function confirmPaperPmid(uid, pmid) {
+  const updated = await api.confirmPmid(uid, pmid, "manual");
+  const i = S.papers.findIndex(x => x.uid === uid);
+  if (i >= 0) S.papers[i] = updated; else S.papers.push(updated);
+  renderLeft(); updateGlobalStat();
+  return updated;
 }
 
-// Inline dropdown for the collapsed single-line header: pick which already-run
-// model's curation to view (models with no run yet are listed but disabled).
+// Dropdown in the Extraction header: pick which already-run model's curation to
+// view (models with no run yet are listed but disabled).
 // Lives inside .lab, CSS-hidden while expanded (see styles.css).
 function modelSelect(p, runs) {
   const modelId = activeModelId(p);
@@ -537,116 +560,38 @@ function modelSelect(p, runs) {
   return sel;
 }
 
-function extractPanel(p) {
-  const panel = el("div", "extract-panel" + (S.extractCollapsed ? " collapsed" : ""));
+// Extraction is driven from the "Add Paper(s)" stepper now, so this pane keeps
+// only the per-model result switcher — which model's output you are reading.
+function modelBar(p) {
   const runs = S.runsByPmid[p.pmid] || {};
-
-  const head = el("div", "lab");
-  head.appendChild(el("span", null, "Run AI extraction"));
-  head.appendChild(modelSelect(p, runs));
-  head.appendChild(el("span", "caret", "▼"));
-  head.onclick = () => {
-    S.extractCollapsed = !panel.classList.contains("collapsed");
-    panel.classList.toggle("collapsed", S.extractCollapsed);
-    try { localStorage.setItem("annotaid:extractCollapsed", S.extractCollapsed ? "1" : ""); } catch (_) {}
-  };
-  panel.appendChild(head);
-
-  const body = el("div", "extract-body");
-
-  const picks = el("div", "model-picks");
-  const checks = [];
-  for (const m of S.config.models) {
-    const lab = el("label");
-    const cb = el("input"); cb.type = "checkbox"; cb.value = m.slug;
-    cb.checked = !runs[m.slug];                 // pre-check models not yet run
-    const stat = runDot(runs[m.slug], S.config.features.length);
-    const dot = el("span", "run-dot " + stat.cls);
-    dot.title = stat.frac;
-    lab.appendChild(cb);
-    lab.appendChild(dot);
-    lab.appendChild(el("span", null, m.label));
-    if (!m.supportsStructuredOutput) lab.appendChild(el("span", "so", "prompt-only"));
-    picks.appendChild(lab); checks.push(cb);
-  }
-  body.appendChild(picks);
-
-  const row = el("div", "extract-row");
-  const sel = el("select");
-  for (const e of S.config.parseEngines) {
-    const o = el("option", null, e + (e === "mistral-ocr" ? " (paid)" : e === "pdf-text" ? " (free)" : ""));
-    o.value = e;
-    if (e === S.config.defaults.parseEngine) o.selected = true;
-    sel.appendChild(o);
-  }
-  row.appendChild(sel);
-  const btn = el("button", "btn primary", "Extract");
-  row.appendChild(btn);
-  body.appendChild(row);
-
-  const warn = el("div", "engine-warn");
-  const syncWarn = () => warn.textContent = sel.value === "mistral-ocr"
-    ? "mistral-ocr is paid and forwards at most ~8 images per PDF." : "";
-  sel.onchange = syncWarn; syncWarn();
-  body.appendChild(warn);
-
-  const progress = el("div", "extract-progress");
-  progress.appendChild(el("div", "extract-progress-bar"));
-  body.appendChild(progress);
-
-  btn.onclick = () => {
-    const models = checks.filter(c => c.checked).map(c => c.value);
-    if (!models.length) { toast("Pick at least one model"); return; }
-    const rerunning = models.filter(id => runs[id]);
-    const atRisk = rerunning.filter(id =>
-      Object.values(runs[id].features).some(f => f.confirmed || f.editedAt));
-    if (atRisk.length) {
-      const names = atRisk.map(id => (S.config.models.find(m => m.slug === id) || {}).label || id).join(", ");
-      if (!window.confirm(`Re-running ${names} will overwrite confirmed/edited values with fresh AI output. Continue?`)) return;
-    }
-    runExtraction(p, models, rerunning.length > 0, sel.value, btn);
-  };
-  panel.appendChild(body);
-  return panel;
+  if (!Object.keys(runs).length) return null;
+  const bar = el("div", "model-bar");
+  bar.appendChild(el("span", "lab", "Model"));
+  bar.appendChild(modelSelect(p, runs));
+  return bar;
 }
 
-// Toast alone faded (2.6s) long before an extraction (up to a minute+) finished,
-// so the only signal was a quiet button-text change. Make it hard to miss:
-// pulsing accent button + spinner + an indeterminate progress bar.
-function setExtractingUi(btn, busy) {
-  if (!btn) return;
-  btn.disabled = busy;
-  btn.classList.toggle("extracting", busy);
-  btn.innerHTML = "";
-  if (busy) {
-    btn.appendChild(el("span", "btn-spinner"));
-    btn.appendChild(document.createTextNode("Extracting…"));
-  } else {
-    btn.textContent = btn.dataset.idleLabel || "Extract";
-  }
-  const progress = document.querySelector(".extract-progress");
-  if (progress) progress.classList.toggle("on", busy);
-}
-
-async function runExtraction(p, models, force, parseEngine, btn) {
+// Runs one paper through the extraction endpoint and folds the result into
+// state. Returns the runs so the caller can report per-model success; it throws
+// on failure rather than toasting, because the stepper shows its own per-paper row.
+async function runExtraction(p, models, parseEngine) {
   const engine = parseEngine || S.config.defaults.parseEngine;
-  if (btn) btn.dataset.idleLabel = btn.textContent;
-  setExtractingUi(btn, true);
-  toast(`Extracting ${models.length} model(s)… this can take a minute`);
-  try {
-    const { runs } = await api.extract(p.pmid, models, S.config.defaults.promptId, engine, !!force);
-    const cur = S.runsByPmid[p.pmid] = S.runsByPmid[p.pmid] || {};
-    for (const r of runs) cur[r.modelId] = r;
-    S.activeModelByPmid[p.pmid] = runs[0] ? runs[0].modelId : S.activeModelByPmid[p.pmid];
-    S.cardIndex = 0;
-    renderRight(); recomputeMatches(); renderLeft();
-    const ok = runs.filter(r => r.status !== "failed").length;
-    toast(`Extraction done: ${ok}/${runs.length} ok`);
-  } catch (err) {
-    toast(`Extraction failed: ${err.message}`);
-  } finally {
-    setExtractingUi(btn, false);
-  }
+  const { runs } = await api.extract(p.pmid, models, S.config.defaults.promptId, engine, false);
+  const cur = S.runsByPmid[p.pmid] = S.runsByPmid[p.pmid] || {};
+  for (const r of runs) cur[r.modelId] = r;
+  S.activeModelByPmid[p.pmid] = runs[0] ? runs[0].modelId : S.activeModelByPmid[p.pmid];
+  S.cardIndex = 0;
+  renderRight(); recomputeMatches(); renderLeft();
+  return runs;
+}
+
+// The stepper closed: land on whatever it produced, so the curator isn't
+// dropped on an empty pane after adding and extracting a paper.
+function finishAddPapers(papers) {
+  renderLeft(); updateGlobalStat();
+  const landing = (papers || []).find(p => p.pmid) || (papers || [])[0];
+  if (landing && !S.activeUid) { selectPaper(landing.uid); return; }
+  renderRight(); recomputeMatches();
 }
 
 boot();

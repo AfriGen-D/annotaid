@@ -21,7 +21,11 @@ def suggested_pmid(filename: str) -> str:
     return stem if stem.isdigit() else ""
 
 
-def store_upload(store: Store, pdf_bytes: bytes, filename: str) -> dict:
+def store_upload(store: Store, pdf_bytes: bytes, filename: str, suggested: str = "") -> dict:
+    """`suggested` is an explicit PMID the curator already named (they came here
+    from a failed fetch-by-PMID row). It only prefills the confirm box — an
+    uploaded PDF has NOT been verified against PubMed, so it is never committed.
+    """
     if not pdf_bytes.startswith(b"%PDF"):
         raise PaperError("not a PDF (missing %PDF header)")
     uid = util.sha256_hex(pdf_bytes)[:12]
@@ -31,10 +35,11 @@ def store_upload(store: Store, pdf_bytes: bytes, filename: str) -> dict:
     if existing:
         return existing  # dedupe: same bytes -> same paper
 
+    suggested = str(suggested).strip()
     paper = {
         "uid": uid,
         "pmid": None,
-        "suggestedPmid": suggested_pmid(filename),
+        "suggestedPmid": suggested if suggested.isdigit() else suggested_pmid(filename),
         "filename": os.path.basename(filename) or f"{uid}.pdf",
         "pmidSource": None,
         "addedAt": util.iso_now(),

@@ -20,6 +20,8 @@ import io
 import json
 import re
 import tarfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +29,54 @@ import xml.etree.ElementTree as ET
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 USER_AGENT = "annotaid/0.1 (biocuration tool; python urllib)"
+
+# --- NCBI rate limiting -----------------------------------------------------
+# NCBI allows 3 requests/second per IP without an API key, 10 with one. That is
+# a per-IP budget, so it has to be enforced here rather than in the client: the
+# "Add Paper(s)" modal fires several fetches concurrently and the server is a
+# ThreadingHTTPServer, so those genuinely run in parallel.
+#
+# Only NCBI's own hosts are gated. www.ncbi.nlm.nih.gov is included because the
+# finder chain hits it too (oa.fcgi, the PMC article page, the direct /pdf/
+# URL). Everything else in the chain — the PMC S3 bucket, the ftp tarballs,
+# OpenAlex, Unpaywall, Europe PMC — is a different operator with a different
+# budget, and throttling multi-MB downloads to 3/s would slow the happy path
+# for nothing.
+_RATE_LIMITED_HOSTS = {"eutils.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov"}
+_INTERVAL_NO_KEY = 1.0 / 3.0
+_INTERVAL_WITH_KEY = 1.0 / 10.0
+_SAFETY = 1.10  # ~10% headroom for clock jitter
+
+
+class _MinIntervalGate:
+    """Hands out request start-slots at least `interval` apart. Thread-safe.
+
+    The sleep happens OUTSIDE the lock: each caller reserves a distinct future
+    slot and then waits for its own slot, so N threads still achieve 1/interval
+    throughput instead of queueing on the mutex.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def wait(self, interval: float) -> None:
+        with self._lock:
+            start = max(time.monotonic(), self._next_at)
+            self._next_at = start + interval
+        delay = start - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+
+
+_gate = _MinIntervalGate()
+
+# _request() is called from eight places, half of them inside best-effort
+# `except Exception: pass` blocks, and it has no view of ctx.secrets — so the
+# rate is read from here rather than threaded through every call site.
+# fetch_fulltext_pdf() sets it; every thread writes the same constant for the
+# life of the process, so the unsynchronised write is benign.
+_has_api_key = False
 
 
 class NcbiError(RuntimeError):
@@ -36,6 +86,8 @@ class NcbiError(RuntimeError):
 def _request(url: str, params: dict | None = None, timeout: int = 15, headers: dict | None = None) -> bytes:
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
+    if (urllib.parse.urlsplit(url).hostname or "") in _RATE_LIMITED_HOSTS:
+        _gate.wait((_INTERVAL_WITH_KEY if _has_api_key else _INTERVAL_NO_KEY) * _SAFETY)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
@@ -225,6 +277,9 @@ def fetch_fulltext_pdf(pmid: str, api_key: str = "", unpaywall_email: str = "") 
     Raises NcbiError (message safe to show to the curator) if PubMed doesn't
     know the PMID, or if no source returned an actual PDF.
     """
+    global _has_api_key
+    _has_api_key = bool(api_key)
+
     pmid = str(pmid).strip()
     if not pmid.isdigit():
         raise NcbiError("PMID must be numeric")

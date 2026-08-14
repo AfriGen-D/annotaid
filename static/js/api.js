@@ -5,11 +5,12 @@ async function jget(path) {
   if (!r.ok) throw new Error((await safeErr(r)) || r.statusText);
   return r.json();
 }
-async function jpost(path, body) {
+async function jpost(path, body, opts) {
   const r = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: opts && opts.signal,
   });
   if (!r.ok) { const e = new Error((await safeErr(r)) || r.statusText); e.status = r.status; throw e; }
   return r.json();
@@ -22,10 +23,16 @@ export const api = {
   config: () => jget("/api/config"),
   state: () => jget("/api/state"),
 
-  uploadPdf: async (file) => {
+  // pmid: optional — the curator named it on the fetch tab before falling back
+  // to a manual upload. Prefills the confirm box; never auto-commits.
+  uploadPdf: async (file, pmid) => {
     const r = await fetch("/api/papers", {
       method: "POST",
-      headers: { "Content-Type": "application/pdf", "X-Filename": file.name },
+      headers: {
+        "Content-Type": "application/pdf",
+        "X-Filename": file.name,
+        ...(pmid ? { "X-Suggested-Pmid": String(pmid) } : {}),
+      },
       body: file,
     });
     if (!r.ok) throw new Error((await safeErr(r)) || r.statusText);
@@ -35,7 +42,7 @@ export const api = {
   confirmPmid: (uid, pmid, source) =>
     jpost(`/api/papers/${encodeURIComponent(uid)}/pmid`, { pmid, source }),
 
-  fetchByPmid: (pmid) => jpost("/api/papers/fetch-by-pmid", { pmid }),
+  fetchByPmid: (pmid, opts) => jpost("/api/papers/fetch-by-pmid", { pmid }, opts),
 
   pdfUrl: (ident) => `/api/pdf/${encodeURIComponent(ident)}`,
 

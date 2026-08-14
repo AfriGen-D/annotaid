@@ -20,7 +20,15 @@ def _query(req):
 
 # --------------------------------------------------------------------------- #
 def h_config(ctx, req, params, body):
-    responses.send_json(req, ctx.config.public_dict())
+    doc = ctx.config.public_dict()
+    # How many PMID fetches the "Add Paper(s)" modal may run at once. The real
+    # NCBI rate limit is enforced server-side in ncbi._request; this is only a
+    # responsiveness knob — browsers cap HTTP/1.1 at ~6 connections per origin,
+    # so stay under it or a batch starves /api/pdf and the static assets.
+    # Derived here (not in Config.public_dict) because only ctx.secrets knows
+    # whether a key is configured; the key itself never leaves Secrets.
+    doc["limits"] = {"pmidFetchConcurrency": 4 if ctx.secrets.ncbi_api_key else 3}
+    responses.send_json(req, doc)
 
 
 def h_state(ctx, req, params, body):
@@ -42,8 +50,12 @@ def h_upload(ctx, req, params, body):
     if not body:
         return responses.send_error_json(req, 400, "empty upload")
     filename = req.headers.get("X-Filename", "upload.pdf")
+    # Set when the curator reached the Upload tab from a failed "fetch by PMID"
+    # row — they already told us which paper this PDF is for, so prefill it
+    # instead of guessing from the filename. Still only a *suggestion*.
+    suggested = req.headers.get("X-Suggested-Pmid", "")
     try:
-        paper = papers_mod.store_upload(ctx.store, body, filename)
+        paper = papers_mod.store_upload(ctx.store, body, filename, suggested)
     except papers_mod.PaperError as exc:
         return responses.send_error_json(req, 400, str(exc))
     responses.send_json(req, paper, 201)

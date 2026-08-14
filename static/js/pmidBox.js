@@ -16,10 +16,13 @@ export function renderPmidBox(paper, { onConfirm }) {
   row.appendChild(input); row.appendChild(btn);
   box.appendChild(row);
 
+  // The prefill comes either from a numeric filename stem or from a PMID the
+  // curator named on the fetch tab before falling back to a manual upload —
+  // the wording has to be true for both.
   const prefilled = !!paper.suggestedPmid;
   box.appendChild(el("div", "note", prefilled
-    ? "Prefilled from the filename — verify it is a real PMID (not a PMC id, DOI, or a number with leading zeros) before confirming."
-    : "The filename isn't numeric, so nothing was prefilled. Enter the PMID and confirm."));
+    ? "Prefilled — verify it is a real PMID for this paper (not a PMC id, DOI, or a number with leading zeros) before confirming."
+    : "Nothing could be prefilled. Enter the PMID and confirm."));
 
   const commit = () => {
     const pmid = input.value.trim();

@@ -20,7 +20,7 @@ pip install -r requirements.txt          # just jsonschema
 # By default the repo-root .keys is used (the same one the scripts/ CLIs read).
 #   OPENROUTER_API_KEY=sk-or-v1-...
 #   NCBI_API_KEY=...        optional — raises the E-utils rate limit (3 -> 10 req/s)
-#   UNPAYWALL_EMAIL=...     optional — enables the Unpaywall finder in "Add PDF -> Fetch by PubMed ID"
+#   UNPAYWALL_EMAIL=...     optional — enables the Unpaywall finder in "Add Paper(s) -> Fetch by PubMed ID(s)"
 
 python run.py                             # serves http://127.0.0.1:8765
 ```
@@ -32,19 +32,36 @@ Flags: `--port`, `--host`, `--config`, `--keys`, `--data-dir`, `--static-dir`,
 
 ## Workflow
 
-1. **Add PDF** — two ways, both behind the "Add PDF" button:
-   - **Fetch by PubMed ID** — enter a PMID; the backend verifies it on PubMed, then tries PMC Open
-     Access and other open-access sources (`server/ncbi.py`) for the full-text PDF. Since the PMID
-     came from PubMed itself, it's stored pre-confirmed. Most subscription-only papers aren't
-     retrievable this way — the modal shows why and points at the Upload tab instead.
-   - **Upload** — drag-and-drop or file-dialog upload of PDF(s) you already have. Each gets a
+1. **Add Paper(s)** — a stepper (`static/js/addPapersModal.js`) that carries a paper from intake to
+   extraction. The chain branches on the first step, so the steps are deliberately unnumbered:
+
+   ```
+   Source ──┬── Upload PDFs ────────────── AI extraction
+            └── PubMed IDs ── Fetching ─── AI extraction
+   ```
+
+   - **Source** — "I have PubMed ID(s)" or "I have the PDF(s)".
+   - **PubMed IDs** — paste one PMID or hundreds (separated by spaces, tabs, commas, semicolons or
+     new lines), or load them from a text file (`.txt`/`.csv`/`.tsv`, or no extension). Fetch stays
+     greyed out until at least one valid PMID is present.
+   - **Fetching** — the backend verifies each id on PubMed, then tries PMC Open Access and other
+     open-access sources (`server/ncbi.py`) for the full-text PDF; NCBI's rate limit is enforced
+     server-side so several run at once. A determinate progress bar plus a per-id result list show
+     what happened: added, already in library, or failed with the specific reason. Failed rows offer
+     **Retry**, an in-place **Upload PDF instead** detour, or **Skip and continue**. Since the PMID
+     came from PubMed itself, a fetched paper is stored pre-confirmed.
+   - **Upload PDFs** — drag-and-drop or file dialog for PDFs you already have. Each gets a
      content-hash id so re-uploads dedupe.
-2. **Confirm PMID** — for uploaded (not fetched) PDFs: the filename stem is prefilled *only* if it
-   is purely numeric; it is never auto-committed. Confirm (or type) the real PubMed ID. Duplicate
-   PMIDs are rejected.
-3. **Extract** — pick model(s) and a PDF parse engine (`pdf-text` free, `mistral-ocr` paid,
-   `native`) and run. The backend calls OpenRouter, validates/repairs every reply against the
-   declared feature types, and stores one run per (paper × model).
+   - **AI extraction** — see step 3. Any paper still missing a PubMed ID is confirmed inline first.
+2. **Confirm PMID** — uploaded (not fetched) PDFs need one: prefilled from the filename stem if it
+   is purely numeric, or from the PMID you named on the fetch step; it is never auto-committed.
+   Duplicate PMIDs are rejected.
+3. **Extract** — the last step of the stepper. Pick model(s) and a PDF parse engine (`pdf-text`
+   free, `mistral-ocr` paid, `native`); the settings apply to every paper this run added, and each
+   paper reports its own success/failure row. The backend calls OpenRouter, validates/repairs every
+   reply against the declared feature types, and stores one run per (paper × model). Extraction is
+   only reachable here — the Extraction pane keeps just the switcher for which model's output you
+   are reading.
 4. **Verify** — per feature: the AI value is prefilled and editable; the original `aiValue` is kept
    immutably beside it (unchanged = "human agrees with AI", edited = a correction). Click a value's
    evidence quote to scroll+highlight it in the PDF. A failed match is declared ("not found in PDF")
