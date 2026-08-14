@@ -3,6 +3,7 @@
 // Mutates the passed run-feature object in place and calls ctx.onEdit(name).
 // Editor widgets adapted from visual_evaluator.html (listEditor / bool-toggle / setWas).
 import { el, escapeHtml } from "./dom.js";
+import { helpIcon } from "./tooltip.js";
 
 /* ---------- value helpers ---------- */
 function normList(arr) {
@@ -31,6 +32,8 @@ export function renderFeature(fdef, feat, ctx) {
 
   const head = el("div", "feat-head");
   head.appendChild(el("span", "feat-name", fdef.name));
+  // schema description, on demand — same head is used by both list and card view
+  if (fdef.description) head.appendChild(helpIcon(fdef.description, `What is “${fdef.name}”?`));
   head.appendChild(el("span", "feat-type", fdef.type));
   const pit = el("span", "pit " + (feat.present ? "t" : "f"), feat.present ? "present" : "not reported");
   head.appendChild(pit);
