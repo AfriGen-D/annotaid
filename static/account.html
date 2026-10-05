@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnnotAid — your account</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317282B'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='%239C7B2E' font-family='serif' font-style='italic'%3Ea%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/css/auth.css">
+</head>
+<body class="auth-body">
+
+<header>
+  <a class="mark" href="/" style="text-decoration:none">Annot<em>Aid</em></a>
+  <span class="spacer"></span>
+  <a class="btn" id="homeLink" href="/">Projects</a>
+  <button class="btn" id="logoutBtn" type="button">Sign out</button>
+</header>
+
+<main class="auth-wrap">
+  <section class="auth-card">
+    <h1>Your account</h1>
+    <p class="lede" id="who"></p>
+    <div class="auth-msg info" id="forceMsg" hidden>
+      Please choose a new password before you continue. The one you were given was temporary.
+    </div>
+    <div class="auth-msg" id="pwMsg" hidden></div>
+    <form id="pwForm" novalidate>
+      <label class="auth-field"><span>Current password</span>
+        <input type="password" name="current" autocomplete="current-password" required></label>
+      <label class="auth-field"><span>New password</span>
+        <input type="password" name="new" autocomplete="new-password" required minlength="10">
+        <div class="auth-hint">At least 10 characters. Changing it signs you out everywhere else.</div></label>
+      <label class="auth-field"><span>Repeat new password</span>
+        <input type="password" name="new2" autocomplete="new-password" required></label>
+      <div class="auth-actions">
+        <button class="btn primary" type="submit">Change password</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script type="module" src="/js/account.js"></script>
+</body>
+</html>

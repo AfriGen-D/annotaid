@@ -134,6 +134,21 @@ class ProjectStore:
                 ),
             )
 
+    def set_added_by(self, uid: str, user_id: str) -> None:
+        """Stamp who brought a paper in. First writer wins: re-adding an
+        existing paper must not take the credit from whoever added it."""
+        with self.db.write() as c:
+            c.execute(
+                "UPDATE papers SET added_by=? WHERE project_id=? AND uid=? AND added_by IS NULL",
+                (user_id, self.project_id, uid),
+            )
+
+    def paper_row(self, uid: str):
+        """The raw papers row (workflow checks need assignee/status)."""
+        return self.db.query_one(
+            "SELECT * FROM papers WHERE project_id=? AND uid=?", (self.project_id, uid)
+        )
+
     def load_paper(self, uid: str):
         row = self.db.query_one(
             "SELECT * FROM papers WHERE project_id=? AND uid=?",
@@ -248,8 +263,8 @@ class ProjectStore:
                 INSERT INTO runs (project_id, uid, model_id, model_label, prompt_id,
                                   prompt_hash, prompt_text, source, parse_engine,
                                   requested_at, completed_at, status, error,
-                                  imported_from)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                  imported_from, requested_by)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(project_id, uid, model_id) DO UPDATE SET
                   model_label=excluded.model_label, prompt_id=excluded.prompt_id,
                   prompt_hash=excluded.prompt_hash, prompt_text=excluded.prompt_text,
@@ -257,7 +272,8 @@ class ProjectStore:
                   requested_at=excluded.requested_at,
                   completed_at=excluded.completed_at,
                   status=excluded.status, error=excluded.error,
-                  imported_from=excluded.imported_from
+                  imported_from=excluded.imported_from,
+                  requested_by=excluded.requested_by
                 """,
                 (
                     self.project_id, uid, model_id,
@@ -267,6 +283,7 @@ class ProjectStore:
                     run.get("requestedAt"), run.get("completedAt"),
                     run.get("status") or "failed",
                     run.get("error"), run.get("importedFrom"),
+                    run.get("requestedBy"),
                 ),
             )
             # Replace every child wholesale: a re-run supersedes its own previous
@@ -360,7 +377,8 @@ class ProjectStore:
             def node(gname):
                 return groups.setdefault(gname, {
                     "present": False, "aiPresent": False,
-                    "confirmed": False, "confirmedAt": None, "rows": [],
+                    "confirmed": False, "confirmedAt": None, "confirmedBy": None,
+                    "rows": [],
                 })
 
             for gr in row_defs.get(key, []):
@@ -380,6 +398,7 @@ class ProjectStore:
                 g["aiPresent"] = bool(st["ai_present"])
                 g["confirmed"] = bool(st["confirmed"])
                 g["confirmedAt"] = st["confirmed_at"]
+                g["confirmedBy"] = st["confirmed_by"]
 
             out.append(_run_dict(
                 r, cells.get((r["uid"], r["model_id"], ""), {}), groups, with_prompt_text
@@ -388,7 +407,8 @@ class ProjectStore:
 
     # ---- curator edits -------------------------------------------------- #
     def merge_run_edits(self, uid: str, model_id: str, incoming_features: dict,
-                        incoming_groups: dict = None, group_defs: dict = None) -> dict:
+                        incoming_groups: dict = None, group_defs: dict = None,
+                        user_id: str = None) -> dict:
         """Apply curator edits, PRESERVING aiValue + type from the database.
 
         Stamps editedAt when a value changes and confirmedAt on confirm
@@ -398,6 +418,9 @@ class ProjectStore:
         `group_defs` comes from features.group_cell_templates(): the store needs
         a declared type and an empty value to create a CURATOR-added row, but it
         must not import the config to get them.
+
+        `user_id` is stamped as edited_by / confirmed_by alongside the
+        timestamps (M8): the last person to change or confirm each value.
         """
         with self.db.write() as c:
             exists = c.execute(
@@ -408,15 +431,15 @@ class ProjectStore:
                 raise KeyError(f"no run for {uid}/{model_id}")
 
             now = util.iso_now()
-            self._merge_cells(c, uid, model_id, "", incoming_features or {}, now)
+            self._merge_cells(c, uid, model_id, "", incoming_features or {}, now, user_id)
             for gname, gnode in (incoming_groups or {}).items():
                 self._merge_group(
                     c, uid, model_id, gname, gnode or {},
-                    (group_defs or {}).get(gname) or {}, now,
+                    (group_defs or {}).get(gname) or {}, now, user_id,
                 )
         return self.load_run(uid, model_id)
 
-    def _merge_cells(self, c, uid, model_id, row_id, incoming, now) -> None:
+    def _merge_cells(self, c, uid, model_id, row_id, incoming, now, user_id=None) -> None:
         """Merge edits into cells that already exist. Never invents a cell: the
         AI (or the config) decides which fields exist, not the payload."""
         rows = c.execute(
@@ -439,17 +462,19 @@ class ProjectStore:
             now_confirmed = bool(inc.get("confirmed", was_confirmed))
 
             edited_at = now if value_changed else row["edited_at"]
+            edited_by = user_id if value_changed else row["edited_by"]
             if now_confirmed and not was_confirmed:
-                confirmed_at = now
+                confirmed_at, confirmed_by = now, user_id
             elif not now_confirmed:
-                confirmed_at = None
+                confirmed_at, confirmed_by = None, None
             else:
-                confirmed_at = row["confirmed_at"]
+                confirmed_at, confirmed_by = row["confirmed_at"], row["confirmed_by"]
 
             c.execute(
                 """
                 UPDATE run_features SET value_json=?, present=?, evidence=?,
-                  evidence_match=?, confirmed=?, edited_at=?, confirmed_at=?
+                  evidence_match=?, confirmed=?, edited_at=?, confirmed_at=?,
+                  edited_by=?, confirmed_by=?
                 WHERE project_id=? AND uid=? AND model_id=? AND row_id=? AND name=?
                 """,
                 (
@@ -458,12 +483,12 @@ class ProjectStore:
                     inc.get("evidence", row["evidence"]),
                     inc.get("evidenceMatch", row["evidence_match"]) or "none",
                     1 if now_confirmed else 0,
-                    edited_at, confirmed_at,
+                    edited_at, confirmed_at, edited_by, confirmed_by,
                     self.project_id, uid, model_id, row_id, row["name"],
                 ),
             )
 
-    def _merge_group(self, c, uid, model_id, gname, gnode, templates, now) -> None:
+    def _merge_group(self, c, uid, model_id, gname, gnode, templates, now, user_id=None) -> None:
         existing = {
             r["row_id"]: r
             for r in c.execute(
@@ -510,7 +535,7 @@ class ProjectStore:
                     (pos, *scope, rid),
                 )
                 self._merge_cells(c, uid, model_id, rid,
-                                  inc_row.get("features") or {}, now)
+                                  inc_row.get("features") or {}, now, user_id)
 
             elif not deleted:
                 if not templates:
@@ -543,6 +568,13 @@ class ProjectStore:
                         now if changed else None,
                         now if confirmed else None,
                     ))
+                    if changed or confirmed:
+                        c.execute(
+                            "UPDATE run_features SET edited_by=?, confirmed_by=? "
+                            "WHERE project_id=? AND uid=? AND model_id=? AND row_id=? AND name=?",
+                            (user_id if changed else None, user_id if confirmed else None,
+                             *scope, rid, fname),
+                        )
 
         if "present" not in gnode and "confirmed" not in gnode:
             return
@@ -556,30 +588,33 @@ class ProjectStore:
             "present", bool(st["present"]) if st else False
         ) else 0
         if now_confirmed and not was_confirmed:
-            confirmed_at = now
+            confirmed_at, confirmed_by = now, user_id
         elif not now_confirmed:
-            confirmed_at = None
+            confirmed_at, confirmed_by = None, None
         else:
             confirmed_at = st["confirmed_at"] if st else now
+            confirmed_by = st["confirmed_by"] if st else user_id
 
         if st:
             c.execute(
-                "UPDATE run_groups SET present=?, confirmed=?, confirmed_at=? "
+                "UPDATE run_groups SET present=?, confirmed=?, confirmed_at=?, confirmed_by=? "
                 "WHERE project_id=? AND uid=? AND model_id=? AND group_name=?",
-                (present, 1 if now_confirmed else 0, confirmed_at, *scope, gname),
+                (present, 1 if now_confirmed else 0, confirmed_at, confirmed_by, *scope, gname),
             )
         else:
             c.execute(
                 "INSERT INTO run_groups (project_id, uid, model_id, group_name, "
-                "present, ai_present, confirmed, confirmed_at) VALUES (?,?,?,?,?,?,?,?)",
+                "present, ai_present, confirmed, confirmed_at, confirmed_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (*scope, gname, present, present,
-                 1 if now_confirmed else 0, confirmed_at),
+                 1 if now_confirmed else 0, confirmed_at, confirmed_by),
             )
 
     # ---- UI state ------------------------------------------------------- #
-    def load_state(self) -> dict:
+    def load_state(self, user_id: str) -> dict:
         raw = self.db.scalar(
-            "SELECT state_json FROM ui_state WHERE project_id=?", (self.project_id,)
+            "SELECT state_json FROM ui_state WHERE project_id=? AND user_id=?",
+            (self.project_id, user_id),
         )
         if not raw:
             return {}
@@ -588,12 +623,12 @@ class ProjectStore:
         except json.JSONDecodeError:
             return {}
 
-    def save_state(self, state: dict) -> None:
+    def save_state(self, user_id: str, state: dict) -> None:
         with self.db.write() as c:
             c.execute(
-                "INSERT INTO ui_state (project_id, state_json) VALUES (?,?) "
-                "ON CONFLICT(project_id) DO UPDATE SET state_json=excluded.state_json",
-                (self.project_id, json.dumps(state or {})),
+                "INSERT INTO ui_state (project_id, user_id, state_json) VALUES (?,?,?) "
+                "ON CONFLICT(project_id, user_id) DO UPDATE SET state_json=excluded.state_json",
+                (self.project_id, user_id, json.dumps(state or {})),
             )
 
 
@@ -615,6 +650,13 @@ def _paper_dict(row, models: list) -> dict:
         "hasPdf": bool(row["has_pdf"]),
         "abstractText": row["abstract_text"],
         "groupItems": _load_group_items_from_row(row),
+        # Curation workflow (server/workflow.py).
+        "assigneeId": row["assignee_id"],
+        "curationStatus": row["curation_status"],
+        "statusReason": row["status_reason"],
+        "statusBy": row["status_by"],
+        "statusAt": row["status_at"],
+        "addedBy": row["added_by"],
     }
 
 
@@ -647,6 +689,8 @@ def _run_dict(row, features: dict, groups: dict, with_prompt_text: bool) -> dict
     }
     if row["imported_from"]:
         out["importedFrom"] = row["imported_from"]
+    if row["requested_by"]:
+        out["requestedBy"] = row["requested_by"]
     # The composed prompt can be a few KB; it is audit material, not something
     # every /api/state needs to ship for every run.
     if with_prompt_text:
@@ -665,4 +709,6 @@ def _feature_dict(row) -> dict:
         "confirmed": bool(row["confirmed"]),
         "editedAt": row["edited_at"],
         "confirmedAt": row["confirmed_at"],
+        "editedBy": row["edited_by"],
+        "confirmedBy": row["confirmed_by"],
     }

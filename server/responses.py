@@ -9,13 +9,61 @@ mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
 
-def send_json(handler, obj, status: int = 200) -> None:
+def send_json(handler, obj, status: int = 200, extra=None) -> None:
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    for k, v in (extra or {}).items():
+        handler.send_header(k, v)
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def redirect(handler, location: str, status: int = 302) -> None:
+    handler.send_response(status)
+    handler.send_header("Location", location)
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
+
+
+SESSION_COOKIE = "annotaid_session"
+
+
+def session_cookie(token: str, secure: bool, max_age: int = None) -> str:
+    """Set-Cookie value. HttpOnly so page scripts can't read it; SameSite=Lax so
+    other sites can't ride it on a POST; host-only (no Domain), so the test and
+    production domains each keep their own logins. Secure whenever the request
+    arrived over HTTPS (see app._cookie_secure)."""
+    parts = [f"{SESSION_COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Lax"]
+    if secure:
+        parts.append("Secure")
+    if max_age is not None:
+        parts.append(f"Max-Age={max_age}")
+    return "; ".join(parts)
+
+
+def clear_session_cookie(secure: bool) -> str:
+    return session_cookie("", secure, max_age=0)
+
+
+def send_file(handler, path: str, content_type: str, extra=None, chunk: int = 1 << 20) -> None:
+    """Stream a file in chunks — for files too big to read into memory at once
+    (the database snapshot)."""
+    size = os.path.getsize(path)
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(size))
+    for k, v in (extra or {}).items():
+        handler.send_header(k, v)
+    handler.end_headers()
+    with open(path, "rb") as fh:
+        while True:
+            buf = fh.read(chunk)
+            if not buf:
+                break
+            handler.wfile.write(buf)
 
 
 def send_bytes(handler, data: bytes, content_type: str, status: int = 200, extra=None) -> None:

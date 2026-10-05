@@ -223,6 +223,7 @@ def run_extraction(
     parse_engine: str | None,
     force: bool = False,
     context: str | None = None,
+    requested_by: str | None = None,
 ) -> list:
     # A paper needs a RESOLVED identity, which no longer has to be a PMID — a
     # paper deliberately marked as having none (optionally with a DOI) is
@@ -296,6 +297,7 @@ def run_extraction(
             )
         for run in fresh:
             run.pop("_pdf_path", None)
+            run["requestedBy"] = requested_by
             store.save_run(run)
         # A freshly saved run carries no pmid field (it is joined in on read), so
         # re-read it rather than shipping the in-memory dict to the client.

@@ -1,32 +1,47 @@
 """Endpoint handlers. Each: fn(ctx, req, params, body_bytes) -> None (writes response).
 
-Project-scoped handlers are wrapped in @project_route and get an extra `proj`
-argument: fn(ctx, proj, req, params, body). The project id travels in the PATH
-rather than as server-side "current project" state — a curator with two projects
-open in two tabs is an obvious thing to do, and a mutable global on a threaded
-server would silently cross their work over.
+By the time a handler runs, app._dispatch has already made sure there is a
+logged-in, active user (`req.user`) unless the route is @public.
+
+Project-scoped handlers are wrapped in @project_route(min_role) and get an extra
+`proj` argument: fn(ctx, proj, req, params, body). The wrapper checks the user's
+role in THAT project on every request (M2, NFR-2): not a member -> 404, exactly
+as if the project did not exist; a curator on a manager route -> 403. The
+project id travels in the PATH rather than as server-side "current project"
+state — someone with two projects open in two tabs is an obvious thing to do.
+
+Global login / sign-up / admin routes live in server/auth_handlers.py.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 from urllib.parse import parse_qs, urlparse
 
 from . import (
+    auth,
+    auth_handlers,
     config_loader,
     export,
     feature_sheet,
     features as feat,
-    identity as identity_mod,
     importer,
+    jobs as jobs_mod,
+    membership,
     ncbi,
     papers as papers_mod,
     projects as projects_mod,
     responses,
     util,
+    workflow,
 )
 from . import schema_builder
+from .access import account_roles, copy_markers, superadmin_only
 from .extraction import run_extraction
+from .net import site_url
+
+# Decision 6: starting extraction spends money on the one shared OpenRouter
+# key, so it needs at least this project role. One line to change.
+EXTRACT_MIN_ROLE = "manager"
 
 
 def _json_body(body_bytes):
@@ -49,19 +64,52 @@ def _limits(ctx) -> dict:
     return {"pmidFetchConcurrency": 4 if ctx.secrets.ncbi_api_key else 3}
 
 
-def project_route(fn):
-    """Resolve {pid} to a Project (metadata + parsed Config + its own store)."""
+def _extraction_enabled(ctx) -> bool:
+    # Only the server's own key exists now (NFR-7): there is no personal key.
+    return bool(ctx.secrets.openrouter_api_key)
 
-    def wrapped(ctx, req, params, body):
-        proj = ctx.projects.get(params["pid"])
-        if proj is None:
-            return responses.send_error_json(
-                req, 404, f"no project {params['pid']}"
-            )
-        return fn(ctx, proj, req, params, body)
 
-    wrapped.__name__ = fn.__name__
-    return wrapped
+def project_route(min_role: str = "curator"):
+    """Resolve {pid} to a Project and check the caller's role in it."""
+
+    def deco(fn):
+        def wrapped(ctx, req, params, body):
+            pid = params["pid"]
+            role = membership.project_role(ctx.db, req.user, pid)
+            proj = ctx.projects.get(pid) if role else None
+            if proj is None:
+                # Same answer for "doesn't exist" and "not yours": an outsider
+                # can't even confirm the project exists.
+                return responses.send_error_json(req, 404, f"no project {pid}")
+            if not membership.at_least(role, min_role):
+                return responses.send_error_json(
+                    req, 403, "only this project's managers can do that"
+                )
+            req.project_role = role
+            return fn(ctx, proj, req, params, body)
+
+        wrapped.__name__ = fn.__name__
+        return copy_markers(fn, wrapped)
+
+    return deco
+
+
+def _permissions(ctx, role) -> dict:
+    """What the UI should offer. A convenience only — every one of these is
+    enforced again on the server when the action is attempted."""
+    manager = membership.at_least(role, "manager")
+    return {
+        "manage": manager,
+        "addPapers": manager,
+        "extract": membership.at_least(role, EXTRACT_MIN_ROLE) and _extraction_enabled(ctx),
+        "export": manager,
+        "assign": manager,
+    }
+
+
+def _workflow_error(req, exc):
+    status = getattr(exc, "status", 400)
+    return responses.send_error_json(req, status, str(exc))
 
 
 # --------------------------------------------------------------------------- #
@@ -73,38 +121,10 @@ def h_config(ctx, req, params, body):
         {
             "limits": _limits(ctx),
             "featureTypes": config_loader.FEATURE_TYPES,
-            # A personal key (server/identity.py) works just as well as the
-            # server's own .keys/env one — see h_extract, which prefers it.
-            "extractionEnabled": bool(ctx.secrets.openrouter_api_key)
-                or bool(identity_mod.get_openrouter_key(ctx.db)),
+            "extractionEnabled": _extraction_enabled(ctx),
             "hasTemplate": ctx.template is not None,
         },
     )
-
-
-# --------------------------------------------------------------------------- #
-# The local curator's own identity (name, email, optional personal OpenRouter
-# key) — see server/identity.py. Not project-scoped: one identity per running
-# instance, asked for once by the home screen's first-run modal.
-# --------------------------------------------------------------------------- #
-def h_identity_get(ctx, req, params, body):
-    responses.send_json(req, identity_mod.get_identity(ctx.db))
-
-
-def h_identity_save(ctx, req, params, body):
-    try:
-        data = _json_body(body)
-    except json.JSONDecodeError:
-        return responses.send_error_json(req, 400, "invalid JSON")
-    try:
-        result = identity_mod.save_identity(
-            ctx.db, data.get("name"), data.get("email"),
-            openrouter_key=data.get("openrouterKey"),
-            clear_key=bool(data.get("clearOpenrouterKey")),
-        )
-    except identity_mod.IdentityError as exc:
-        return responses.send_error_json(req, 400, str(exc))
-    responses.send_json(req, result)
 
 
 def h_home_shell(ctx, req, params, body):
@@ -206,9 +226,24 @@ def h_validate_config(ctx, req, params, body):
 
 
 def h_projects_list(ctx, req, params, body):
-    responses.send_json(req, {"projects": projects_mod.list_projects(ctx.db)})
+    """Only the projects the caller belongs to; a superadmin sees all (M19)."""
+    user = req.user
+    if user["account_role"] == "superadmin":
+        projects = projects_mod.list_projects(ctx.db)
+        roles = {}
+    else:
+        mine = membership.memberships(ctx.db, user["id"])
+        roles = {m["projectId"]: m["role"] for m in mine}
+        projects = projects_mod.list_projects(ctx.db, only_ids=set(roles))
+    for p in projects:
+        p["myRole"] = roles.get(p["id"], "manager")
+    responses.send_json(req, {
+        "projects": projects,
+        "canCreate": user["account_role"] in ("superadmin", "manager"),
+    })
 
 
+@account_roles("superadmin", "manager")
 def h_project_create(ctx, req, params, body):
     try:
         data = _json_body(body)
@@ -227,12 +262,11 @@ def h_project_create(ctx, req, params, body):
             )
         doc = ctx.template.portable_dict()
 
-    ident = identity_mod.get_identity(ctx.db)
-    created_by = {"name": ident["name"], "email": ident["email"]} if ident["set"] else None
+    user = req.user
     try:
         project = projects_mod.create_project(
             ctx.db, data.get("name"), data.get("description"), doc,
-            created_by=created_by,
+            created_by={"id": user["id"], "name": user["name"], "email": user["email"]},
         )
     except projects_mod.ProjectError as exc:
         return responses.send_error_json(req, 400, str(exc))
@@ -242,16 +276,16 @@ def h_project_create(ctx, req, params, body):
 # --------------------------------------------------------------------------- #
 # Project metadata
 # --------------------------------------------------------------------------- #
-@project_route
+@project_route("manager")
 def h_project_get(ctx, proj, req, params, body):
-    """The portable document — this is what a manager hands to a curator."""
+    """The portable document — this is what a manager hands to another manager."""
     doc = projects_mod.portable_document(ctx.db, proj.id)
     if doc is None:
         return responses.send_error_json(req, 404, f"no project {proj.id}")
     responses.send_json(req, doc)
 
 
-@project_route
+@project_route("manager")
 def h_project_update(ctx, proj, req, params, body):
     try:
         data = _json_body(body)
@@ -269,7 +303,8 @@ def h_project_update(ctx, proj, req, params, body):
     responses.send_json(req, updated)
 
 
-@project_route
+@superadmin_only
+@project_route("manager")
 def h_project_archive(ctx, proj, req, params, body):
     try:
         projects_mod.archive_project(ctx.db, proj.id)
@@ -278,50 +313,59 @@ def h_project_archive(ctx, proj, req, params, body):
     responses.send_json(req, {"ok": True})
 
 
-@project_route
+@project_route()
 def h_project_config(ctx, proj, req, params, body):
     doc = proj.config.public_dict()
     doc["limits"] = _limits(ctx)
     doc["project"] = proj.meta()
+    doc["myRole"] = req.project_role
+    doc["permissions"] = _permissions(ctx, req.project_role)
     responses.send_json(req, doc)
 
 
 # --------------------------------------------------------------------------- #
 # Curation state
 # --------------------------------------------------------------------------- #
-@project_route
+@project_route()
 def h_state(ctx, proj, req, params, body):
+    user = req.user
     responses.send_json(
         req,
         {
             "papers": proj.store.list_papers(),
             "runs": proj.store.list_all_runs(),
-            "ui": proj.store.load_state(),
+            "ui": proj.store.load_state(user["id"]),
+            "me": {"id": user["id"], "name": user["name"], "role": req.project_role},
+            "permissions": _permissions(ctx, req.project_role),
+            # id -> name for attribution ("edited by ...") and assignees. Names
+            # only; deactivated accounts included, so old edits stay named.
+            "users": auth.names_by_id(ctx.db),
+            "members": membership.list_members(ctx.db, proj.id),
         },
     )
 
 
-@project_route
+@project_route()
 def h_save_state(ctx, proj, req, params, body):
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
         return responses.send_error_json(req, 400, "invalid JSON")
-    proj.store.save_state(data if isinstance(data, dict) else {})
+    proj.store.save_state(req.user["id"], data if isinstance(data, dict) else {})
     responses.send_json(req, {"ok": True})
 
 
-@project_route
+@project_route()
 def h_papers_list(ctx, proj, req, params, body):
     responses.send_json(req, {"papers": proj.store.list_papers()})
 
 
-@project_route
+@project_route("manager")
 def h_upload(ctx, proj, req, params, body):
     if not body:
         return responses.send_error_json(req, 400, "empty upload")
     filename = req.headers.get("X-Filename", "upload.pdf")
-    # Set when the curator reached the Upload tab from a failed "fetch by PMID"
+    # Set when the manager reached the Upload tab from a failed "fetch by PMID"
     # row — they already told us which paper this PDF is for, so prefill it
     # instead of guessing from the filename. Still only a *suggestion*.
     suggested = req.headers.get("X-Suggested-Pmid", "")
@@ -329,11 +373,14 @@ def h_upload(ctx, proj, req, params, body):
         paper = papers_mod.store_upload(proj.store, body, filename, suggested)
     except papers_mod.PaperError as exc:
         return responses.send_error_json(req, 400, str(exc))
-    responses.send_json(req, paper, 201)
+    proj.store.set_added_by(paper["uid"], req.user["id"])
+    responses.send_json(req, proj.store.load_paper(paper["uid"]), 201)
 
 
-@project_route
+@project_route("manager")
 def h_fetch_pmid(ctx, proj, req, params, body):
+    """Synchronous single-PMID fetch. Superseded by the import job (POST .../jobs);
+    kept until the browser has moved over."""
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
@@ -341,44 +388,29 @@ def h_fetch_pmid(ctx, proj, req, params, body):
     pmid = str(data.get("pmid", "")).strip()
     if not pmid.isdigit():
         return responses.send_error_json(req, 400, "PMID must be numeric")
-    try:
-        pdf_bytes = ncbi.fetch_fulltext_pdf(
-            pmid, ctx.secrets.ncbi_api_key, ctx.secrets.unpaywall_email
-        )
-    except ncbi.NcbiError as exc:
-        # allowExtractionOnAbstract: no open-access full text, but the project
-        # has opted into curating from the abstract when that happens.
-        if not proj.config.allow_extraction_on_abstract:
-            return responses.send_error_json(req, 502, str(exc))
-        try:
-            abstract_text = ncbi.fetch_abstract(pmid, ctx.secrets.ncbi_api_key)
-        except ncbi.NcbiError as abstract_exc:
-            return responses.send_error_json(
-                req, 502,
-                f"{exc} — and no abstract could be fetched either ({abstract_exc})",
-            )
-        try:
-            paper = papers_mod.store_and_confirm_from_abstract(proj.store, pmid, abstract_text)
-        except papers_mod.PaperError as paper_exc:
-            return responses.send_error_json(req, 409, str(paper_exc))
-        return responses.send_json(req, paper, 201)
-    try:
-        paper = papers_mod.store_and_confirm_from_pmid(proj.store, pdf_bytes, pmid)
-    except papers_mod.PaperError as exc:
-        return responses.send_error_json(req, 409, str(exc))
-    responses.send_json(req, paper, 201)
+    job = {"created_by": req.user["id"], "params": {}}
+    state, outcome, result, error = jobs_mod.run_import_item(ctx.jobs, proj, job, pmid)
+    if state == "done" and result and outcome != "duplicate":
+        return responses.send_json(req, proj.store.load_paper(result["uid"]), 201)
+    if outcome == "duplicate":
+        return responses.send_error_json(req, 409, error or f"PMID {pmid} is already in this project")
+    return responses.send_error_json(req, 502, error or "fetch failed")
 
 
-@project_route
+@project_route()
 def h_identity(ctx, proj, req, params, body):
     """Resolve a paper's identity: confirm a PMID, or record that it has none
-    (optionally with a DOI instead). Was h_confirm_pmid."""
+    (optionally with a DOI instead). Set-up, not curation: a project manager may
+    always do it; otherwise only the paper's assignee."""
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
         return responses.send_error_json(req, 400, "invalid JSON")
 
     uid = params["uid"]
+    blocked = workflow.setup_block_reason(ctx.db, req.user, req.project_role, proj.id, uid)
+    if blocked:
+        return responses.send_error_json(req, 403, blocked)
     try:
         if data.get("status") == "none" or data.get("noPmid"):
             # Project policy, set by whoever defined the project. Enforced here
@@ -401,11 +433,11 @@ def h_identity(ctx, proj, req, params, body):
     responses.send_json(req, paper)
 
 
-@project_route
+@project_route()
 def h_save_group_items(ctx, proj, req, params, body):
-    """The curator's own declared row identity for the project's one repeating
-    group (e.g. which variants/haplotypes this paper reports on) — set here,
-    BEFORE extraction, never proposed by the AI. See server/extraction.py."""
+    """The declared row identity for the project's one repeating group (e.g.
+    which variants this paper reports on) — set BEFORE extraction, never
+    proposed by the AI. Set-up, like h_identity: managers, or the assignee."""
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
@@ -413,6 +445,9 @@ def h_save_group_items(ctx, proj, req, params, body):
     uid = proj.store.uid_for(params["uid"])
     if not uid:
         return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    blocked = workflow.setup_block_reason(ctx.db, req.user, req.project_role, proj.id, uid)
+    if blocked:
+        return responses.send_error_json(req, 403, blocked)
     items = data.get("items")
     if not isinstance(items, list):
         return responses.send_error_json(req, 400, "items must be an array")
@@ -420,22 +455,27 @@ def h_save_group_items(ctx, proj, req, params, body):
     responses.send_json(req, {"items": saved})
 
 
-@project_route
+@project_route()
 def h_pdf(ctx, proj, req, params, body):
+    """PDFs only ever leave through here: logged in AND on the project (NFR-6)."""
     path = proj.store.resolve_pdf(params["id"])
     if not path:
         return responses.send_error_json(req, 404, "no PDF")
     with open(path, "rb") as fh:
-        responses.send_bytes(req, fh.read(), "application/pdf")
+        responses.send_bytes(req, fh.read(), "application/pdf",
+                             extra={"Cache-Control": "private, max-age=3600"})
 
 
-@project_route
+@project_route(EXTRACT_MIN_ROLE)
 def h_extract(ctx, proj, req, params, body):
+    """Synchronous single-paper extraction. Superseded by the extraction job
+    (POST .../jobs); kept until the browser has moved over."""
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
         return responses.send_error_json(req, 400, "invalid JSON")
-    # Keyed on uid: a paper may legitimately have no PMID.
+    if not _extraction_enabled(ctx):
+        return responses.send_error_json(req, 400, "extraction is not configured on this server")
     ident = str(data.get("uid") or data.get("pmid") or "").strip()
     paper = proj.store.load_paper_by_ident(ident)
     if paper is None:
@@ -443,31 +483,19 @@ def h_extract(ctx, proj, req, params, body):
     models = data.get("models") or []
     if not models:
         return responses.send_error_json(req, 400, "no models specified")
-    # A personal key (server/identity.py) takes priority over the server's own
-    # .keys/env one — it's the more specific credential, and it's how someone
-    # without access to server-level secrets can still run extraction.
-    secrets = ctx.secrets
-    user_key = identity_mod.get_openrouter_key(ctx.db)
-    if user_key:
-        secrets = dataclasses.replace(secrets, openrouter_api_key=user_key)
     try:
         runs = run_extraction(
-            proj.config,
-            secrets,
-            proj.store,
-            paper,
-            models,
-            data.get("promptId"),
-            data.get("parseEngine"),
-            force=bool(data.get("force")),
-            context=proj.prompt_context(),
+            proj.config, ctx.secrets, proj.store, paper, models,
+            data.get("promptId"), data.get("parseEngine"),
+            force=bool(data.get("force")), context=proj.prompt_context(),
+            requested_by=req.user["id"],
         )
     except ValueError as exc:
         return responses.send_error_json(req, 400, str(exc))
     responses.send_json(req, {"runs": runs})
 
 
-@project_route
+@project_route("manager")
 def h_import(ctx, proj, req, params, body):
     try:
         data = _json_body(body)
@@ -478,7 +506,7 @@ def h_import(ctx, proj, req, params, body):
     responses.send_json(req, summary)
 
 
-@project_route
+@project_route()
 def h_runs(ctx, proj, req, params, body):
     uid = proj.store.uid_for(params["ident"])
     if not uid:
@@ -486,8 +514,10 @@ def h_runs(ctx, proj, req, params, body):
     responses.send_json(req, {"runs": proj.store.list_runs(uid)})
 
 
-@project_route
+@project_route()
 def h_save_run(ctx, proj, req, params, body):
+    """Autosave of curated values. Only the paper's assignee, while it is in
+    progress (M7) — enforced here, whatever the UI shows."""
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
@@ -498,6 +528,9 @@ def h_save_run(ctx, proj, req, params, body):
     uid = proj.store.uid_for(params["ident"])
     if not uid:
         return responses.send_error_json(req, 404, f"no paper {params['ident']}")
+    blocked = workflow.edit_block_reason(ctx.db, req.user, proj.id, uid)
+    if blocked:
+        return responses.send_error_json(req, 403, blocked)
     try:
         run = proj.store.merge_run_edits(
             uid, model_id,
@@ -506,6 +539,7 @@ def h_save_run(ctx, proj, req, params, body):
             # The store needs a declared type and an empty value to create a
             # curator-added row, but must not import the config to get them.
             feat.group_cell_templates(proj.config.features),
+            user_id=req.user["id"],
         )
     except KeyError as exc:
         return responses.send_error_json(req, 404, str(exc))
@@ -515,12 +549,12 @@ def h_save_run(ctx, proj, req, params, body):
     responses.send_json(req, {"ok": True, "savedAt": util.iso_now(), "run": run})
 
 
-@project_route
+@project_route("manager")
 def h_project_config_download(ctx, proj, req, params, body):
     """The project card's "download config file" menu item — the exact
     portable document (server/projects.portable_document) forced to a file
-    download, so a project manager can hand it to a curator or another
-    manager without touching the New Project stepper's import route."""
+    download, so a project manager can hand it to another manager without
+    touching the New Project stepper's import route."""
     doc = projects_mod.portable_document(ctx.db, proj.id)
     if doc is None:
         return responses.send_error_json(req, 404, f"no project {proj.id}")
@@ -533,7 +567,7 @@ def h_project_config_download(ctx, proj, req, params, body):
     )
 
 
-@project_route
+@project_route("manager")
 def h_export(ctx, proj, req, params, body):
     fmt = _query(req).get("format", "json")
     slug = util.slugify(proj.name) or "project"
@@ -546,6 +580,16 @@ def h_export(ctx, proj, req, params, body):
         )
     doc = export.export_audit_json(proj.store, proj.config, proj)
     doc["generatedAt"] = util.iso_now()
+    # Attribution ids -> who they are (M8). Never includes password data.
+    doc["users"] = {
+        r["id"]: {"name": r["name"], "email": r["email"]}
+        for r in ctx.db.query("SELECT id, name, email FROM users")
+    }
+    doc["events"] = [
+        {"at": r["at"], "uid": r["uid"], "actor": r["actor"], "action": r["action"],
+         "detail": json.loads(r["detail_json"] or "{}")}
+        for r in ctx.db.query("SELECT * FROM events WHERE project_id=? ORDER BY id", (proj.id,))
+    ]
     responses.send_text(
         req, json.dumps(doc, indent=2, ensure_ascii=False),
         "application/json; charset=utf-8",
@@ -555,7 +599,260 @@ def h_export(ctx, proj, req, params, body):
 
 
 # --------------------------------------------------------------------------- #
+# Workflow: claim / assign / submit / exclude / reopen (M3, M7, M9, M17)
+# --------------------------------------------------------------------------- #
+def _paper_uid(proj, params):
+    return proj.store.uid_for(params["uid"])
+
+
+def _reply_paper(req, proj, uid):
+    responses.send_json(req, {"paper": proj.store.load_paper(uid)})
+
+
+@project_route()
+def h_claim(ctx, proj, req, params, body):
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    try:
+        workflow.claim(ctx.db, req.user, proj.id, uid)
+    except workflow.WorkflowError as exc:
+        return _workflow_error(req, exc)
+    _reply_paper(req, proj, uid)
+
+
+@project_route("manager")
+def h_assign(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    try:
+        workflow.assign(ctx.db, req.user, proj.id, uid, data.get("assigneeId") or None)
+    except workflow.WorkflowError as exc:
+        return _workflow_error(req, exc)
+    _reply_paper(req, proj, uid)
+
+
+@project_route()
+def h_submit(ctx, proj, req, params, body):
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    try:
+        workflow.submit(ctx.db, req.user, proj.id, uid)
+    except workflow.WorkflowError as exc:
+        return _workflow_error(req, exc)
+    _reply_paper(req, proj, uid)
+
+
+@project_route()
+def h_exclude(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    try:
+        workflow.exclude(ctx.db, req.user, proj.id, uid, data.get("status"), data.get("reason"))
+    except workflow.WorkflowError as exc:
+        return _workflow_error(req, exc)
+    _reply_paper(req, proj, uid)
+
+
+@project_route("manager")
+def h_reopen(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    try:
+        workflow.reopen(ctx.db, req.user, proj.id, uid, data.get("reason"))
+    except workflow.WorkflowError as exc:
+        return _workflow_error(req, exc)
+    _reply_paper(req, proj, uid)
+
+
+@project_route()
+def h_paper_history(ctx, proj, req, params, body):
+    uid = _paper_uid(proj, params)
+    if not uid:
+        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
+    responses.send_json(req, {"events": workflow.history(ctx.db, proj.id, uid)})
+
+
+# --------------------------------------------------------------------------- #
+# Background jobs (M14, M16, M21)
+# --------------------------------------------------------------------------- #
+@project_route()
+def h_jobs_create(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    kind = data.get("kind")
+    refs = data.get("refs") or []
+    if not isinstance(refs, list):
+        return responses.send_error_json(req, 400, "refs must be a list")
+    role = req.project_role
+    params_ = {}
+    if kind == "import":
+        if not membership.at_least(role, "manager"):
+            return responses.send_error_json(req, 403, "only this project's managers can add papers")
+        bad = [r for r in refs if not str(r).strip().isdigit()]
+        if bad:
+            return responses.send_error_json(req, 400, f"not a PMID: {', '.join(map(str, bad[:5]))}")
+    elif kind == "extract":
+        if not membership.at_least(role, EXTRACT_MIN_ROLE):
+            return responses.send_error_json(req, 403, "only this project's managers can run extraction")
+        if not _extraction_enabled(ctx):
+            return responses.send_error_json(req, 400, "extraction is not configured on this server")
+        models = data.get("models") or []
+        if not models:
+            return responses.send_error_json(req, 400, "choose at least one model")
+        unknown = [m for m in models if proj.config.model(m) is None]
+        if unknown:
+            return responses.send_error_json(req, 400, f"unknown model(s): {', '.join(unknown)}")
+        uids = []
+        for r in refs:
+            uid = proj.store.uid_for(str(r))
+            if not uid:
+                return responses.send_error_json(req, 400, f"no paper {r} in this project")
+            uids.append(uid)
+        refs = uids
+        params_ = {"models": models, "promptId": data.get("promptId"),
+                   "parseEngine": data.get("parseEngine"), "force": bool(data.get("force"))}
+    else:
+        return responses.send_error_json(req, 400, "kind must be 'import' or 'extract'")
+    try:
+        job = ctx.jobs.create(proj.id, kind, refs, params_, req.user["id"])
+    except jobs_mod.JobError as exc:
+        return responses.send_error_json(req, exc.status, str(exc))
+    responses.send_json(req, job, 201)
+
+
+@project_route()
+def h_jobs_list(ctx, proj, req, params, body):
+    responses.send_json(req, {"jobs": jobs_mod.list_jobs(ctx.db, proj.id)})
+
+
+@project_route()
+def h_job_get(ctx, proj, req, params, body):
+    job = jobs_mod.get_job(ctx.db, proj.id, params["jid"])
+    if job is None:
+        return responses.send_error_json(req, 404, "no such job")
+    responses.send_json(req, job)
+
+
+@project_route("manager")
+def h_job_cancel(ctx, proj, req, params, body):
+    try:
+        job = ctx.jobs.cancel(proj.id, params["jid"])
+    except jobs_mod.JobError as exc:
+        return responses.send_error_json(req, exc.status, str(exc))
+    responses.send_json(req, job)
+
+
+@project_route("manager")
+def h_job_retry(ctx, proj, req, params, body):
+    try:
+        job = ctx.jobs.retry(proj.id, params["jid"], req.user["id"])
+    except jobs_mod.JobError as exc:
+        return responses.send_error_json(req, exc.status, str(exc))
+    responses.send_json(req, job, 201)
+
+
+# --------------------------------------------------------------------------- #
+# Team (M13, M20) and join links
+# --------------------------------------------------------------------------- #
+@project_route()
+def h_members(ctx, proj, req, params, body):
+    responses.send_json(req, {"members": membership.list_members(ctx.db, proj.id)})
+
+
+@project_route("manager")
+def h_directory(ctx, proj, req, params, body):
+    """Active accounts a manager can add (they don't create accounts, M13)."""
+    responses.send_json(req, {"users": membership.directory(ctx.db)})
+
+
+@project_route("manager")
+def h_member_add(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    role = data.get("role") or "curator"
+    if role == "manager" and req.user["account_role"] != "superadmin":
+        return responses.send_error_json(req, 403, "only a superadmin can add project managers")
+    current = ctx.db.scalar("SELECT role FROM project_members WHERE project_id=? AND user_id=?",
+                            (proj.id, data.get("userId")))
+    if current == "manager" and req.user["account_role"] != "superadmin":
+        return responses.send_error_json(req, 403, "only a superadmin can change a manager's role")
+    try:
+        membership.add_member(ctx.db, proj.id, data.get("userId"), role, req.user["id"])
+    except membership.MembershipError as exc:
+        return responses.send_error_json(req, 400, str(exc))
+    responses.send_json(req, {"members": membership.list_members(ctx.db, proj.id)})
+
+
+@project_route("manager")
+def h_member_remove(ctx, proj, req, params, body):
+    target = params["userId"]
+    role = ctx.db.scalar("SELECT role FROM project_members WHERE project_id=? AND user_id=?",
+                         (proj.id, target))
+    if role == "manager" and req.user["account_role"] != "superadmin":
+        return responses.send_error_json(req, 403, "only a superadmin can remove a project manager")
+    try:
+        released = membership.remove_member(ctx.db, proj.id, target, req.user["id"])
+    except membership.MembershipError as exc:
+        return responses.send_error_json(req, 400, str(exc))
+    responses.send_json(req, {"released": released,
+                              "members": membership.list_members(ctx.db, proj.id)})
+
+
+@project_route("manager")
+def h_links(ctx, proj, req, params, body):
+    responses.send_json(req, {"links": membership.list_links(ctx.db, proj.id)})
+
+
+@project_route("manager")
+def h_link_create(ctx, proj, req, params, body):
+    try:
+        data = _json_body(body)
+    except json.JSONDecodeError:
+        return responses.send_error_json(req, 400, "invalid JSON")
+    try:
+        link, token = membership.create_link(ctx.db, proj.id, req.user["id"],
+                                             days=data.get("days"), max_uses=data.get("maxUses"))
+    except membership.MembershipError as exc:
+        return responses.send_error_json(req, 400, str(exc))
+    # The full URL is shown ONCE; afterwards only the link's metadata exists.
+    link["url"] = site_url(req, f"/join/{token}")
+    responses.send_json(req, link, 201)
+
+
+@project_route("manager")
+def h_link_revoke(ctx, proj, req, params, body):
+    try:
+        link = membership.revoke_link(ctx.db, proj.id, params["lid"], req.user["id"])
+    except membership.MembershipError as exc:
+        return responses.send_error_json(req, 404, str(exc))
+    responses.send_json(req, link)
+
+
+# --------------------------------------------------------------------------- #
 def register(router):
+    auth_handlers.register(router)
+
     # global
     router.add("GET", "/api/config", h_config)
     router.add("GET", "/api/projects", h_projects_list)
@@ -564,8 +861,6 @@ def register(router):
     router.add("GET", "/api/template", h_template)
     router.add("GET", "/api/feature-template", h_feature_template)
     router.add("POST", "/api/parse-feature-sheet", h_parse_feature_sheet)
-    router.add("GET", "/api/identity", h_identity_get)
-    router.add("POST", "/api/identity", h_identity_save)
 
     # project metadata
     router.add("GET", "/api/projects/{pid}", h_project_get)
@@ -588,6 +883,30 @@ def register(router):
     router.add("GET", "/api/projects/{pid}/runs/{ident}", h_runs)
     router.add("POST", "/api/projects/{pid}/runs/{ident}", h_save_run)
     router.add("GET", "/api/projects/{pid}/export", h_export)
+
+    # workflow
+    router.add("POST", "/api/projects/{pid}/papers/{uid}/claim", h_claim)
+    router.add("POST", "/api/projects/{pid}/papers/{uid}/assign", h_assign)
+    router.add("POST", "/api/projects/{pid}/papers/{uid}/submit", h_submit)
+    router.add("POST", "/api/projects/{pid}/papers/{uid}/exclude", h_exclude)
+    router.add("POST", "/api/projects/{pid}/papers/{uid}/reopen", h_reopen)
+    router.add("GET", "/api/projects/{pid}/papers/{uid}/history", h_paper_history)
+
+    # jobs
+    router.add("POST", "/api/projects/{pid}/jobs", h_jobs_create)
+    router.add("GET", "/api/projects/{pid}/jobs", h_jobs_list)
+    router.add("GET", "/api/projects/{pid}/jobs/{jid}", h_job_get)
+    router.add("POST", "/api/projects/{pid}/jobs/{jid}/cancel", h_job_cancel)
+    router.add("POST", "/api/projects/{pid}/jobs/{jid}/retry", h_job_retry)
+
+    # team
+    router.add("GET", "/api/projects/{pid}/members", h_members)
+    router.add("GET", "/api/projects/{pid}/directory", h_directory)
+    router.add("POST", "/api/projects/{pid}/members", h_member_add)
+    router.add("POST", "/api/projects/{pid}/members/{userId}/remove", h_member_remove)
+    router.add("GET", "/api/projects/{pid}/links", h_links)
+    router.add("POST", "/api/projects/{pid}/links", h_link_create)
+    router.add("POST", "/api/projects/{pid}/links/{lid}/revoke", h_link_revoke)
 
     # page shells
     router.add("GET", "/", h_home_shell)

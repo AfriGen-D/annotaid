@@ -1,1 +1,3 @@
-"""annotaid — local biocuration gold-standard tool (stdlib backend)."""
+"""annotaid — AI-assisted biocuration, hosted multi-user edition (stdlib backend)."""
+
+VERSION = "2.0.0-dev"

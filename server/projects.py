@@ -77,12 +77,28 @@ def _leaf_count(features_raw) -> int:
     return total
 
 
-def list_projects(db: Db) -> list:
+def list_projects(db: Db, only_ids=None, include_archived: bool = False) -> list:
     """Home-screen payload. One query — cheap because run_features is relational
-    rather than buried inside a JSON blob per run."""
+    rather than buried inside a JSON blob per run.
+
+    only_ids: restrict to these project ids (the caller's memberships); None
+    means every project (superadmin). include_archived: the admin view.
+    """
+    if only_ids is not None and not only_ids:
+        return []
+    where = "WHERE 1=1" if include_archived else "WHERE p.archived_at IS NULL"
+    params = ()
+    if only_ids is not None:
+        ids = sorted(only_ids)
+        where += " AND p.id IN (" + ",".join("?" * len(ids)) + ")"
+        params = tuple(ids)
     rows = db.query(
         """
         SELECT p.id, p.name, p.description, p.created_at, p.updated_at, p.config_json,
+          p.archived_at, p.created_by_name,
+          (SELECT COUNT(*) FROM project_members WHERE project_id=p.id)              AS members,
+          (SELECT COUNT(*) FROM papers WHERE project_id=p.id
+             AND curation_status IN ('submitted','excluded','unextractable'))       AS finished,
           (SELECT COUNT(*) FROM papers WHERE project_id=p.id)                       AS papers,
           (SELECT COUNT(*) FROM papers WHERE project_id=p.id
              AND pmid_status='pending')                                             AS pending,
@@ -91,9 +107,10 @@ def list_projects(db: Db) -> list:
              AND confirmed=1)                                                       AS confirmed,
           (SELECT COUNT(*) FROM run_features WHERE project_id=p.id)                 AS features_total
         FROM projects p
-        WHERE p.archived_at IS NULL
+        """ + where + """
         ORDER BY p.updated_at DESC
-        """
+        """,
+        params,
     )
     out = []
     for r in rows:
@@ -110,6 +127,8 @@ def list_projects(db: Db) -> list:
                 "description": r["description"],
                 "createdAt": r["created_at"],
                 "updatedAt": r["updated_at"],
+                "archivedAt": r["archived_at"],
+                "createdByName": r["created_by_name"],
                 # One number, combining paper-level features and every field
                 # nested under a group — the group boundary is an authoring/
                 # curation detail, not something a manager scanning project
@@ -126,6 +145,8 @@ def list_projects(db: Db) -> list:
                     "runs": r["runs"],
                     "confirmed": r["confirmed"],
                     "featuresTotal": r["features_total"],
+                    "finished": r["finished"],
+                    "members": r["members"],
                 },
             }
         )
@@ -179,10 +200,9 @@ def create_project(db: Db, name, description, config_doc: dict, created_by: dict
     """Create a project. The config is validated BEFORE insert, so the database
     can never hold a config that would fail to load.
 
-    created_by: {"name", "email"} from server/identity.get_identity(), stamped
-    by the caller (h_project_create) — this module has no notion of "the
-    current user", it just records whatever it is handed. None if no identity
-    was set yet.
+    created_by: {"id", "name", "email"} of the logged-in user, stamped by the
+    caller (h_project_create). The creator is also made the project's first
+    manager (M11), in the same transaction.
     """
     name = _clean_name(name)
     description = _clean_description(description)
@@ -197,18 +217,24 @@ def create_project(db: Db, name, description, config_doc: dict, created_by: dict
 
     pid = new_id()
     now = util.iso_now()
+    created_by_id = (created_by or {}).get("id") or None
     created_by_name = (created_by or {}).get("name") or None
     created_by_email = (created_by or {}).get("email") or None
     try:
         with db.write() as c:
             c.execute(
                 "INSERT INTO projects (id, name, description, config_json, "
-                "created_at, updated_at, created_by_name, created_by_email) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "created_at, updated_at, created_by, created_by_name, created_by_email) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (pid, name, description,
                  json.dumps(config.portable_dict(), ensure_ascii=False), now, now,
-                 created_by_name, created_by_email),
+                 created_by_id, created_by_name, created_by_email),
             )
+            if created_by_id:
+                c.execute(
+                    "INSERT INTO project_members (project_id, user_id, role, added_at, added_by) "
+                    "VALUES (?,?,?,?,?)", (pid, created_by_id, "manager", now, created_by_id),
+                )
     except Exception as exc:  # sqlite3.IntegrityError on the unique name index
         if "projects_name" in str(exc) or "UNIQUE" in str(exc).upper():
             raise ProjectError(f"a project named {name!r} already exists")
@@ -248,6 +274,15 @@ def update_project(db: Db, pid: str, *, name=None, description=None,
             raise ProjectError(f"a project named {new_name!r} already exists")
         raise
     return {"id": pid, "name": new_name, "description": new_desc, "updatedAt": now}
+
+
+def unarchive_project(db: Db, pid: str) -> None:
+    row = db.query_one("SELECT id FROM projects WHERE id=? AND archived_at IS NOT NULL", (pid,))
+    if row is None:
+        raise ProjectError(f"no archived project {pid}")
+    now = util.iso_now()
+    with db.write() as c:
+        c.execute("UPDATE projects SET archived_at=NULL, updated_at=? WHERE id=?", (now, pid))
 
 
 def archive_project(db: Db, pid: str) -> None:

@@ -238,9 +238,10 @@ def run_all(tmp):
            sa.merge_run_edits, "deadbeef0000", "anthropic/claude-opus-4.7", {})
 
     print("\nui state")
-    sa.save_state({"zoom": 1.4})
-    check("ui state round-trips", sa.load_state() == {"zoom": 1.4})
-    check("ui state is per project", sb.load_state() == {})
+    sa.save_state("u_alice", {"zoom": 1.4})
+    check("ui state round-trips", sa.load_state("u_alice") == {"zoom": 1.4})
+    check("ui state is per project", sb.load_state("u_alice") == {})
+    check("ui state is per user", sa.load_state("u_bob") == {})
 
     print("\nhome-screen stats")
     # A paper nobody has resolved yet, so `pending` is actually exercised:

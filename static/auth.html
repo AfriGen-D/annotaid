@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnnotAid — sign in</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317282B'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='%239C7B2E' font-family='serif' font-style='italic'%3Ea%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/css/auth.css">
+</head>
+<body class="auth-body">
+
+<header>
+  <span class="mark">Annot<em>Aid</em></span>
+  <span class="spacer"></span>
+</header>
+
+<main class="auth-wrap">
+  <!-- Sign in -->
+  <section class="auth-card" id="loginCard" hidden>
+    <h1>Sign in</h1>
+    <p class="lede">AI-assisted biocuration.</p>
+    <div class="auth-invite" id="loginInvite" hidden></div>
+    <div class="auth-msg" id="loginMsg" hidden></div>
+    <form id="loginForm" novalidate>
+      <label class="auth-field"><span>Email</span>
+        <input type="email" name="email" autocomplete="username" required autofocus></label>
+      <label class="auth-field"><span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required></label>
+      <div class="auth-actions">
+        <button class="btn primary" type="submit">Sign in</button>
+      </div>
+    </form>
+    <p class="auth-alt">No account yet? <a id="toSignup" href="/signup">Request one</a></p>
+    <p class="auth-hint">Forgot your password? Ask your AnnotAid administrator to reset it.</p>
+  </section>
+
+  <!-- Sign up -->
+  <section class="auth-card" id="signupCard" hidden>
+    <h1>Request an account</h1>
+    <p class="lede">An administrator approves new accounts before they can sign in.</p>
+    <div class="auth-invite" id="signupInvite" hidden></div>
+    <div class="auth-msg" id="signupMsg" hidden></div>
+    <form id="signupForm" novalidate>
+      <label class="auth-field"><span>Full name</span>
+        <input type="text" name="name" autocomplete="name" required maxlength="120"></label>
+      <label class="auth-field"><span>Email</span>
+        <input type="email" name="email" autocomplete="email" required maxlength="200"></label>
+      <label class="auth-field"><span>Password</span>
+        <input type="password" name="password" autocomplete="new-password" required minlength="10">
+        <div class="auth-hint">At least 10 characters.</div></label>
+      <label class="auth-field"><span>Repeat password</span>
+        <input type="password" name="password2" autocomplete="new-password" required></label>
+      <div class="auth-actions">
+        <button class="btn primary" type="submit">Request account</button>
+      </div>
+    </form>
+    <p class="auth-alt">Already have an account? <a id="toLogin" href="/login">Sign in</a></p>
+  </section>
+
+  <!-- Join link, when already signed in -->
+  <section class="auth-card" id="joinCard" hidden>
+    <h1>Join a project</h1>
+    <div class="auth-msg" id="joinMsg" hidden></div>
+    <p class="lede" id="joinText"></p>
+    <div class="auth-actions">
+      <button class="btn primary" id="joinBtn" type="button">Join project</button>
+      <a class="btn" href="/">Not now</a>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/js/authPages.js"></script>
+</body>
+</html>
