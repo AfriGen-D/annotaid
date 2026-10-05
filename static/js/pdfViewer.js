@@ -230,7 +230,10 @@ export function computeMatches(features) {
   state.activeTarget = -1;
   const results = [];
   for (const f of state.features) {
-    const t = { name: f.name, evidence: f.evidence || null, located: false, rects: null, pageIdx: null, partial: false };
+    // `label` is what the nav shows; `name` stays the opaque lookup key, which
+    // for a cell inside a repeating group is a composite (group.field@rowId).
+    const t = { name: f.name, label: f.label || f.name, evidence: f.evidence || null,
+                located: false, rects: null, pageIdx: null, partial: false };
     if (t.evidence && state.pageIndex.length) {
       for (const pi of state.pageIndex) {
         const hit = locate(t.evidence, pi);
@@ -297,7 +300,7 @@ function updateNavLabel() {
   if (i < 0) { elm.textContent = `${n} evidence span(s)`; return; }
   const t = state.targets[i];
   const st = t.located ? (t.partial ? "partial" : "found") : "not found in PDF";
-  const label = `${i + 1}/${n} · ${t.name} · ${st}`;
+  const label = `${i + 1}/${n} · ${t.label} · ${st}`;
   elm.textContent = label;
   if (state.onNav) state.onNav(label);
 }

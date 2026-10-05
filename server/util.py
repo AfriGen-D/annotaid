@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import tempfile
 from datetime import datetime, timezone
 
@@ -60,6 +61,16 @@ def sha256_hex(data: bytes) -> str:
 def prompt_id(text: str) -> str:
     """Stable id identifying the exact prompt used (brief §6 promptId)."""
     return "sha256:" + sha256_hex(text.encode("utf-8"))[:16]
+
+
+def short_id(nbytes: int = 4) -> str:
+    """A short opaque id (8 hex chars by default).
+
+    Used for group row ids. Rows need an identity that survives insert, delete
+    and reorder — an array index does not, and matching rows by index is how you
+    silently reassign one curator's edits to a different variant.
+    """
+    return secrets.token_hex(nbytes)
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")

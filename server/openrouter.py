@@ -44,19 +44,40 @@ def build_messages(prompt: str, pdf_path: str, filename: str) -> list:
     ]
 
 
+def build_messages_abstract(prompt: str, abstract_text: str) -> list:
+    """allowExtractionOnAbstract path: no PDF exists, so the abstract text is
+    inlined into the same user turn instead of a file part. The model is told
+    plainly what it's looking at, since every other run implies a full paper."""
+    return [
+        {
+            "role": "user",
+            "content": (
+                f"{prompt}\n\n---\n"
+                "NOTE: no full-text PDF was available for this paper. What "
+                "follows is its PubMed abstract ONLY — extract what the "
+                "abstract actually states, and leave a field absent rather "
+                "than guessing at anything the full text would be needed for.\n\n"
+                f"{abstract_text}"
+            ),
+        }
+    ]
+
+
 def build_payload(
     model: str,
     messages: list,
     response_schema: dict | None,
-    parse_engine: str,
+    parse_engine: str | None,
     send_response_format: bool,
 ) -> dict:
     payload = {
         "model": model,
         "messages": messages,
-        # Select OpenRouter's PDF parse engine (pdf-text | mistral-ocr | native).
-        "plugins": [{"id": "file-parser", "pdf": {"engine": parse_engine}}],
     }
+    if parse_engine:
+        # Select OpenRouter's PDF parse engine (pdf-text | mistral-ocr | native).
+        # None (the abstract-only path — no file part in `messages`) skips this.
+        payload["plugins"] = [{"id": "file-parser", "pdf": {"engine": parse_engine}}]
     if send_response_format and response_schema is not None:
         payload["response_format"] = {
             "type": "json_schema",

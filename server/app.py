@@ -8,18 +8,25 @@ from urllib.parse import urlparse
 
 from . import handlers, responses
 from .config_loader import Config, Secrets
+from .db import Db
+from .projects import ProjectRegistry
 from .router import Router
-from .store import Store
 
 MAX_BODY = 64 * 1024 * 1024  # 64 MB cap (large PDFs)
 
 
 @dataclass
 class Context:
-    config: Config
+    """There is no global `config` or `store` any more — a feature set and a paper
+    library both belong to a project, resolved per request via `projects`."""
+
     secrets: Secrets
-    store: Store
+    db: Db
+    projects: ProjectRegistry
     static_dir: str
+    # Starter config used to seed a new project. Optional: the server is fully
+    # usable with existing projects even if the template file is broken.
+    template: Config | None = None
 
 
 def make_handler(ctx: Context, router: Router):

@@ -12,7 +12,6 @@ import re
 
 from jsonschema import Draft202012Validator
 
-from . import schema_builder
 
 # Tolerant key aliasing (borrowed from the prototype's parseFeatures).
 VALUE_KEYS = ["value", "values", "val", "label", "name", "term"]
@@ -28,6 +27,10 @@ EVIDENCE_KEYS = [
     "context",
 ]
 PRESENT_KEYS = ["present", "present_in_text", "present_in_paper", "found"]
+# A repeating group. Models very often return a bare array where the schema asks
+# for {present, items}, or name the list something else — both are cheap to
+# accept and expensive to reject.
+ITEMS_KEYS = ["items", "entries", "rows", "list", "records", "values"]
 TRUE_SET = {"yes", "y", "true", "t", "1"}
 FALSE_SET = {"no", "n", "false", "f", "0"}
 
@@ -101,10 +104,10 @@ def to_bool(val):
     return None
 
 
-def coerce_value(raw, feature: dict):
-    """Force a raw value to the feature's declared type. Never raises."""
-    t = feature["type"]
-    nullable = feature.get("nullable", True)
+def coerce_value(raw, leaf):
+    """Force a raw value to the leaf's declared type. Never raises."""
+    t = leaf.type
+    nullable = leaf.nullable
     if t == "array<string>":
         return to_list_str(raw)
     if t == "array<number>":
@@ -123,7 +126,7 @@ def coerce_value(raw, feature: dict):
         if raw is None:
             return None
         s = str(raw).strip()
-        return s if s in feature.get("enumValues", []) else None
+        return s if s in leaf.enum_values else None
     # string
     if raw in (None, "", "null"):
         return None
@@ -131,7 +134,7 @@ def coerce_value(raw, feature: dict):
 
 
 def _is_empty_value(val, feature) -> bool:
-    if feature["type"].startswith("array"):
+    if feature.type.startswith("array"):
         return not val
     return val in (None, "")
 
@@ -166,6 +169,44 @@ def coerce_feature(node, feature: dict) -> dict:
     return {"present": present, "value": value, "evidence": ev}
 
 
+def coerce_group(node, group):
+    """Normalise a repeating group -> canonical {present, items, truncated}.
+
+    Tolerant about the envelope: a bare list, or {present, items}, or the list
+    under any of ITEMS_KEYS. Rows beyond the group's maxItems are DROPPED and
+    reported — the cap is our policy (a 200-row supplementary table would blow
+    the response), so it is enforced here rather than in the wire schema, whose
+    dialect does not support maxItems anyway.
+    """
+    if isinstance(node, list):
+        raw_items, present_raw, has_present = node, None, False
+    elif isinstance(node, dict):
+        raw_items, found = _first(node, ITEMS_KEYS)
+        if not found or not isinstance(raw_items, list):
+            raw_items = []
+        present_raw, has_present = _first(node, PRESENT_KEYS)
+    else:
+        raw_items, present_raw, has_present = [], None, False
+
+    dropped = max(0, len(raw_items) - group.max_items)
+    rows = []
+    for raw in raw_items[: group.max_items]:
+        raw = raw if isinstance(raw, dict) else {}
+        rows.append({f.name: coerce_feature(raw.get(f.name), f) for f in group.features})
+
+    if has_present:
+        present = to_bool(present_raw)
+        if present is None:
+            present = bool(rows)
+    else:
+        present = bool(rows)
+
+    out = {"present": present, "items": rows}
+    if dropped:
+        out["truncated"] = dropped
+    return out
+
+
 def coerce_payload(parsed: dict, features: list) -> dict:
     """Coerce every feature. Missing features are filled by the repair step."""
     parsed = parsed if isinstance(parsed, dict) else {}
@@ -174,8 +215,11 @@ def coerce_payload(parsed: dict, features: list) -> dict:
         parsed = parsed["features"]
     canonical = {}
     for f in features:
-        if f["name"] in parsed:
-            canonical[f["name"]] = coerce_feature(parsed[f["name"]], f)
+        if f.name in parsed:
+            canonical[f.name] = (
+                coerce_group(parsed[f.name], f) if f.is_group
+                else coerce_feature(parsed[f.name], f)
+            )
     return canonical
 
 
@@ -183,12 +227,14 @@ def _repair(canonical: dict, features: list) -> dict:
     """Fill missing features with an absent placeholder; drop unknown keys."""
     out = {}
     for f in features:
-        if f["name"] in canonical:
-            out[f["name"]] = canonical[f["name"]]
+        if f.name in canonical:
+            out[f.name] = canonical[f.name]
+        elif f.is_group:
+            out[f.name] = {"present": False, "items": []}
         else:
-            out[f["name"]] = {
+            out[f.name] = {
                 "present": False,
-                "value": schema_builder.empty_value(f),
+                "value": f.empty_value(),
                 "evidence": None,
             }
     return out
@@ -215,31 +261,55 @@ def process(raw_text: str, features: list, response_schema: dict):
 
     canonical = coerce_payload(parsed, features)
     had_all = len(canonical) == len(features)
-    errs = validate(canonical, response_schema)
 
-    if not errs and had_all and _clean_of_extras(parsed, features):
+    # Dropping rows over a group's cap is a change we made to the model's answer,
+    # so it must not be reported as a clean pass. `truncated` is our own
+    # bookkeeping and has to come off the node before validating — the declared
+    # group schema is additionalProperties:false.
+    truncated = []
+    for name, node in canonical.items():
+        if isinstance(node, dict) and node.pop("truncated", 0):
+            truncated.append(f"{name}: dropped rows over the configured maximum")
+
+    errs = validate(canonical, response_schema)
+    if not errs and had_all and not truncated and _clean_of_extras(parsed, features):
         return canonical, "ok", []
 
     repaired = _repair(canonical, features)
     errs2 = validate(repaired, response_schema)
     if not errs2:
-        return repaired, "repaired", []
-    return repaired, "failed", errs2
+        return repaired, "repaired", truncated
+    return repaired, "failed", errs2 + truncated
 
 
 def _clean_of_extras(parsed, features) -> bool:
-    """True if the parsed object had no extra top-level keys and every node was a
-    proper {present, value, evidence} dict (i.e. genuinely 'ok', not just coercible)."""
+    """True if the parsed object had no extra keys and every node already used the
+    exact required grammar (i.e. genuinely 'ok', not merely coercible)."""
     if not isinstance(parsed, dict):
         return False
     obj = parsed.get("features") if isinstance(parsed.get("features"), dict) else parsed
-    names = {f["name"] for f in features}
+    names = {f.name for f in features}
     if set(obj.keys()) - names:
         return False
     for f in features:
-        node = obj.get(f["name"])
+        node = obj.get(f.name)
         if not isinstance(node, dict):
             return False
-        if set(node.keys()) - {"present", "value", "evidence"}:
+        if f.is_group:
+            if set(node.keys()) - {"present", "items"}:
+                return False
+            if not isinstance(node.get("items"), list):
+                return False
+            row_names = {c.name for c in f.features}
+            for row in node["items"]:
+                if not isinstance(row, dict) or set(row.keys()) - row_names:
+                    return False
+                for c in f.features:
+                    cell = row.get(c.name)
+                    if not isinstance(cell, dict):
+                        return False
+                    if set(cell.keys()) - {"present", "value", "evidence"}:
+                        return False
+        elif set(node.keys()) - {"present", "value", "evidence"}:
             return False
     return True

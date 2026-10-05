@@ -1,8 +1,20 @@
-"""Load and meta-validate config/schema.json, and load secrets from .keys.
+"""Load and meta-validate a curation config, and load secrets from .keys.
 
 The config is config-driven (brief §8): it declares the feature list + types, the
 models, the prompt(s), and the CSV export mapping. Secrets live only in memory and
 are never serialised into an /api response.
+
+Since projects landed, a config arrives from one of two places:
+
+  load_config(path)   -- a file on disk; used ONLY for the starter template that
+                         seeds a new project
+  parse_config(dict)  -- a project's own stored config document
+
+parse_config is the shared validator, so a project config gets exactly the same
+meta-schema checks a file always did. A project config must inline its prompt
+`text`: a `file` reference is shared mutable state living outside the project,
+which breaks both "the project owns its copy" and handing the config to someone
+else. Hence prompt_dir=None -- inline text only.
 """
 from __future__ import annotations
 
@@ -11,18 +23,16 @@ from dataclasses import dataclass, field
 
 from jsonschema import Draft202012Validator
 
-from . import util
+from . import features as feat, util
+from .features import FEATURE_TYPES, FeatureError  # noqa: F401  (re-exported)
 
-FEATURE_TYPES = [
-    "string",
-    "boolean",
-    "number",
-    "enum",
-    "array<string>",
-    "array<number>",
-]
-
-# Meta-schema: validate the shape of schema.json itself on load (fail fast).
+# Meta-schema: the shape of the DOCUMENT (fail fast on load).
+#
+# Deliberately permissive about what is inside `features`: feature semantics —
+# types, enum values, identifiers, the two-level nesting cap — are checked by
+# features.parse_features, which produces messages a project manager can act on.
+# jsonschema's oneOf errors ("is not valid under any of the given schemas") would
+# be strictly worse for exactly the input a human is hand-editing.
 CONFIG_META_SCHEMA = {
     "type": "object",
     "required": ["features", "models"],
@@ -31,21 +41,14 @@ CONFIG_META_SCHEMA = {
         "features": {
             "type": "array",
             "minItems": 1,
-            "items": {
-                "type": "object",
-                "required": ["name", "type"],
-                "additionalProperties": True,
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "type": {"enum": FEATURE_TYPES},
-                    "nullable": {"type": "boolean"},
-                    "description": {"type": "string"},
-                    "enumValues": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                },
+            "items": {"type": "object", "required": ["name"]},
+        },
+        "settings": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "allowPapersWithoutPmid": {"type": "boolean"},
+                "allowExtractionOnAbstract": {"type": "boolean"},
             },
         },
         "models": {
@@ -82,17 +85,45 @@ class Config:
     parse_engines: list
     defaults: dict
     export: dict
+    settings: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
 
     # ---- convenience lookups ----
-    def feature(self, name: str):
-        for f in self.features:
-            if f["name"] == name:
-                return f
-        return None
+    # `features` holds features.Leaf / features.Group objects, never raw dicts.
+    def feature(self, path: str):
+        """By name, or by dotted path for a field inside a group."""
+        return feat.find(self.features, path)
 
     def feature_names(self) -> list:
-        return [f["name"] for f in self.features]
+        """Every curatable path, e.g. ['sample_size', 'variants.rsid', ...]."""
+        return feat.paths(self.features)
+
+    def leaves(self) -> list:
+        """Paper-level features only."""
+        return feat.leaves(self.features)
+
+    def groups(self) -> list:
+        return feat.groups(self.features)
+
+    def group(self, name: str):
+        for g in self.groups():
+            if g.name == name:
+                return g
+        return None
+
+    @property
+    def allow_papers_without_pmid(self) -> bool:
+        """Project policy. Absent reads as False: a project must opt IN to
+        papers with no PubMed ID, so a curator cannot quietly add unidentified
+        papers to a gold standard keyed on PubMed."""
+        return bool(self.settings.get("allowPapersWithoutPmid", False))
+
+    @property
+    def allow_extraction_on_abstract(self) -> bool:
+        """Project policy, same opt-in shape as allow_papers_without_pmid: when
+        on, fetch-by-PMID falls back to the PubMed abstract if no open-access
+        full-text PDF is found, and extraction runs against that abstract."""
+        return bool(self.settings.get("allowExtractionOnAbstract", False))
 
     def model(self, slug: str):
         for m in self.models:
@@ -114,19 +145,33 @@ class Config:
             self.parse_engines[0] if self.parse_engines else "pdf-text"
         )
 
+    def portable_dict(self) -> dict:
+        """The config half of a project's portable document.
+
+        Prompt text is INLINED (never a `file` reference) so the document is
+        self-contained: this is what gets stored in projects.config_json and what
+        a project manager hands to a curator.
+        """
+        return {
+            "features": [f.to_dict() for f in self.features],
+            "models": self.models,
+            "prompts": [{"label": p["label"], "text": p["text"]} for p in self.prompts],
+            "parseEngines": self.parse_engines,
+            "defaults": self.defaults,
+            "export": self.export,
+            "settings": dict(self.settings),
+        }
+
     def public_dict(self) -> dict:
         """Config for GET /api/config — NO secrets ever included."""
         return {
-            "features": [
-                {
-                    "name": f["name"],
-                    "type": f["type"],
-                    "nullable": f.get("nullable", True),
-                    "description": f.get("description", ""),
-                    **({"enumValues": f["enumValues"]} if "enumValues" in f else {}),
-                }
-                for f in self.features
-            ],
+            # Nested: a group carries its own `features` list, so the client
+            # renders paper-level fields and repeating rows from one payload.
+            "features": [f.to_dict() for f in self.features],
+            "settings": {
+                "allowPapersWithoutPmid": self.allow_papers_without_pmid,
+                "allowExtractionOnAbstract": self.allow_extraction_on_abstract,
+            },
             "models": [
                 {
                     "slug": m["slug"],
@@ -154,9 +199,22 @@ class Secrets:
 
 
 def load_config(path: str) -> Config:
+    """Read + validate a config FILE. Only the starter template uses this."""
     cfg = util.read_json(path)
     if cfg is None:
         raise ConfigError(f"Config file not found or empty: {path}")
+    return parse_config(cfg, prompt_dir=os.path.dirname(os.path.abspath(path)),
+                        label=path)
+
+
+def parse_config(cfg: dict, prompt_dir: str | None = None, label: str = "config") -> Config:
+    """Validate + normalise a config document.
+
+    prompt_dir=None (the default, used for every project config) rejects prompt
+    `file` references and requires inline `text`.
+    """
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"Invalid config ({label}): not an object")
 
     errors = sorted(
         Draft202012Validator(CONFIG_META_SCHEMA).iter_errors(cfg),
@@ -164,18 +222,15 @@ def load_config(path: str) -> Config:
     )
     if errors:
         msgs = "; ".join(f"{list(e.path)}: {e.message}" for e in errors[:8])
-        raise ConfigError(f"Invalid config ({path}): {msgs}")
+        raise ConfigError(f"Invalid config ({label}): {msgs}")
 
-    # feature-level cross checks
-    names = set()
-    for f in cfg["features"]:
-        if f["name"] in names:
-            raise ConfigError(f"Duplicate feature name: {f['name']}")
-        names.add(f["name"])
-        f.setdefault("nullable", True)
-        f.setdefault("description", "")
-        if f["type"] == "enum" and not f.get("enumValues"):
-            raise ConfigError(f"Feature '{f['name']}' is enum but has no enumValues")
+    # Feature semantics live in features.py — one place, with messages a project
+    # manager can act on. It also applies every default exactly once, which four
+    # separate modules used to do independently.
+    try:
+        parsed_features = feat.parse_features(cfg["features"], label)
+    except FeatureError as exc:
+        raise ConfigError(str(exc))
 
     # normalise models (label fallback per notes.md)
     models = []
@@ -195,12 +250,16 @@ def load_config(path: str) -> Config:
     if len(set(labels)) != len(labels):
         raise ConfigError(f"Duplicate model labels: {labels}")
 
-    # load prompts (text from `file` relative to config dir, or inline `text`)
-    cfg_dir = os.path.dirname(os.path.abspath(path))
+    # load prompts (inline `text`, or from `file` when a prompt_dir is allowed)
     prompts = []
     for p in cfg.get("prompts", []):
         if p.get("file"):
-            ppath = os.path.join(cfg_dir, p["file"])
+            if prompt_dir is None:
+                raise ConfigError(
+                    f"Prompt {p.get('label')!r} uses a file reference; a project "
+                    "config must inline its prompt text so it stays portable"
+                )
+            ppath = os.path.join(prompt_dir, p["file"])
             if not os.path.isfile(ppath):
                 raise ConfigError(f"Prompt file not found: {ppath}")
             with open(ppath, encoding="utf-8") as fh:
@@ -217,13 +276,18 @@ def load_config(path: str) -> Config:
 
     parse_engines = cfg.get("parseEngines") or ["pdf-text", "mistral-ocr", "native"]
 
+    settings = cfg.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ConfigError(f"Invalid config ({label}): settings must be an object")
+
     return Config(
-        features=cfg["features"],
+        features=parsed_features,
         models=models,
         prompts=prompts,
         parse_engines=parse_engines,
         defaults=cfg.get("defaults", {}),
         export=cfg.get("export", {}),
+        settings=settings,
         raw=cfg,
     )
 

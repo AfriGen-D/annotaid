@@ -22,3 +22,7 @@ export function toast(msg) {
 }
 
 export const $ = s => document.querySelector(s);
+
+export function downloadFile(url) {
+  const a = el("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+}

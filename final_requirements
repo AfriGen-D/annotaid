@@ -1,0 +1,355 @@
+# AnnotAid v2 — Software Requirements Specification
+
+| | |
+|---|---|
+| Document | Software Requirements Specification (SRS) |
+| Product | AnnotAid v2 — hosted, multi-user release |
+| Scope of this document | "Must have" requirements (M1–M23) |
+| Related documents | `specs.md` (full prioritised list, including Should/Could items), `README.md`, `CHANGELOG.md` |
+
+---
+
+## 1. Introduction
+
+### 1.1 Purpose
+
+This document specifies what AnnotAid v2 must do and the qualities it must have. It is written for three audiences: the people who will approve and host the system, the developers who will build and test it, and the project managers and curators who will use it. It is meant to be read on its own. A reader who has never seen AnnotAid should come away knowing what the system does, who uses it, how they use it, and what constraints govern how it is built.
+
+Requirements are divided into **functional requirements** (Section 3), which describe the behaviour the system must provide, and **non-functional requirements** (Section 4), which describe the qualities that behaviour must have: security, reliability, auditability, capacity and so on. Each requirement is given an identifier, a short title and a narrative explanation of what is required and why.
+
+### 1.2 Product background
+
+AnnotAid is an AI-assisted biocuration tool. *Biocuration* is the work of reading scientific papers and recording specific facts from them, such as sample sizes, p-values, populations studied or genetic variants reported, in a structured form so that they can be compared and analysed across many papers.
+
+Doing this by hand is slow. Handing it entirely to an AI is unreliable. AnnotAid combines the two. A large language model (LLM) reads a paper's PDF and proposes a value for each field the project cares about, together with the passage in the paper that supports it. A human curator then checks each proposal against the source, corrects it where needed and confirms it. The value the AI originally proposed is never overwritten. It is kept alongside the curator's final value, so the project always has an audit trail of what the machine said and what the human decided.
+
+### 1.3 Scope of this release
+
+Version 1 (v1) of AnnotAid already exists. It is a local, single-user application: each person installs it on their own computer, and there are no accounts, no shared data and no roles. Version 2 (v2) turns it into a **hosted web application for one institution**, running several curation projects at once. v2 adds:
+
+- user accounts with login;
+- three roles (superadmin, project manager, curator), each with distinct permissions;
+- shared projects in which work is assigned to and tracked across several curators;
+- background jobs for long-running operations such as bulk paper import and bulk AI extraction;
+- deployment, HTTPS and backup on an institutional virtual machine.
+
+Many capabilities already exist in v1 for a single user. They are marked **(v1)** in this document. These are to be *extended* to the multi-user setting, not rebuilt.
+
+This document covers only the "Must have" tier. The "Should have" and "Could have" items (cost estimates, batch cancellation, dashboards, schema locking, DOI duplicate detection, invite links, a global job-queue view) are recorded in `specs.md`. They are outside the scope of this release.
+
+### 1.4 Definitions and abbreviations
+
+| Term | Meaning |
+|---|---|
+| **PMID** | PubMed Identifier. A unique number assigned by the US National Library of Medicine's PubMed database to each indexed paper. |
+| **DOI** | Digital Object Identifier. A persistent identifier for a published paper. |
+| **PMC** | PubMed Central, NCBI's free full-text archive, from which open-access PDFs can often be retrieved. |
+| **NCBI E-utilities** | The National Center for Biotechnology Information's web API, used to verify that a PMID exists and to look up its details. |
+| **LLM** | Large language model: the AI that reads the paper and proposes field values. |
+| **OpenRouter** | A commercial service giving access to many LLMs through one API and one account key. |
+| **Project** | A self-contained curation effort: a set of papers, a schema describing what to extract from them, and the people working on it. |
+| **Schema** | The definition of what to extract in a project: the list of fields (called *features*), their types and descriptions, the instructions given to the model, and the model and parse engine to use. |
+| **Feature / field** | One item to be extracted from a paper, e.g. "sample size" or "countries studied". A feature may also be a *repeating group*, such as a list of variants each with its own fields. |
+| **Parse engine** | The method used to convert the PDF into text the model can read (for example, plain text extraction or OCR). |
+| **Extraction** | One run of the LLM over one paper, producing proposed values and supporting evidence for every feature. |
+| **Evidence** | The passage from the paper that the model cites in support of a proposed value. It can be highlighted in the PDF viewer. |
+| **`aiValue`** | The value the model originally proposed for a field. It is immutable: it is never changed after extraction. |
+| **Curated value** | The value the curator has settled on for a field. It starts equal to `aiValue` and may be edited. |
+| **Confirm** | The curator's explicit statement that a field's curated value has been checked against the source and is correct. |
+| **Pool** | The set of papers in a project that have not been assigned to any curator and are available to be claimed. |
+| **Background job** | A long-running task (such as importing 200 papers) that the server performs independently of the user's browser request, reporting progress as it goes. |
+| **Superadmin / Project manager / Curator** | The three user roles; see Section 2.3. |
+| **(v1)** | Marks a capability that already exists in the single-user v1 and is extended rather than rebuilt. |
+
+---
+
+## 2. Overall description
+
+### 2.1 Product perspective
+
+AnnotAid v2 is a self-contained web application. A single server process serves the web interface, stores all data, runs background jobs and calls out to external services. Users reach it through a web browser over HTTPS. There is no separate database server, job queue or file store to operate. Everything runs inside one container on one institutional virtual machine.
+
+The system depends on several external services over the internet. It uses OpenRouter to run the language models. It uses NCBI E-utilities, PubMed Central, OpenAlex, Unpaywall and Europe PMC to verify PMIDs and locate open-access PDFs.
+
+### 2.2 Product functions (summary)
+
+At the highest level, the system allows:
+
+1. an administrator to create accounts and give people roles;
+2. a project manager to define a project: what fields to extract, with which model and instructions;
+3. a project manager to load papers into the project (by PMID or by PDF upload) and run AI extraction over them in bulk;
+4. a project manager to distribute the papers among curators, or leave them in a shared pool;
+5. a curator to open an assigned paper, check each AI-proposed value against the PDF, correct it, confirm it, and finally submit the paper, or mark it as excluded or unextractable;
+6. the whole team to rely on every change being saved, attributed and recoverable.
+
+### 2.3 User classes and characteristics
+
+The system has three roles. They are **cumulative**: each role can do everything the role beneath it can do, plus more.
+
+- **Curator.** A domain specialist who reviews papers. Curators work inside the projects they have been added to. They do not configure projects or manage users. The curator role is held **per project**: a person can be a curator on one project and have no access to another.
+- **Project manager.** Someone who designs and runs curation projects. The project manager role is an **account-level** role, meaning it is a property of the person's account rather than of any single project. It lets that person create projects. The person who creates a project automatically becomes that project's manager, and a superadmin can add further managers to it. Within a project they manage, a project manager can do everything a curator can, and can also define the schema, bring in papers, run extraction and assign work.
+- **Superadmin.** The system administrator, also an account-level role. A superadmin can do everything a project manager can, across *every* project. They also manage user accounts, which is significant because the system does not send email (see Section 2.5). Password resets and account creation therefore pass through a superadmin.
+
+The expected user population is small: roughly 10–15 registered users, of whom about two will typically be working at the same moment. This is a planning figure, and the architecture in Section 2.5 depends on it.
+
+### 2.4 Operating environment
+
+- **Server:** one Docker container on an institutional Linux virtual machine. Caddy runs in front of it as a reverse proxy and provides HTTPS.
+- **Client:** a current desktop web browser that supports JavaScript ES modules. No installation is required on the user's computer.
+- **Network:** the server needs outbound HTTPS access to OpenRouter and to the literature services listed in Section 2.1. Users need HTTPS access to the server.
+
+### 2.5 Design and implementation constraints
+
+The following technical choices are fixed for this release. Each is explained below, because each one shapes the requirements that follow.
+
+| Layer | Choice |
+|---|---|
+| Backend | Python standard-library HTTP server (v1), extended |
+| Database | SQLite in WAL mode, single file |
+| Background jobs | A `jobs` table plus one worker thread in the same process; the browser polls for status |
+| File storage | PDFs on a local volume, served only through authenticated endpoints |
+| Authentication | Email + password, `hashlib.scrypt` (standard library), server-side sessions stored in SQLite, httpOnly cookies, no email sending |
+| Frontend | Vanilla JavaScript ES modules + pdf.js (v1) |
+| External services | OpenRouter (one server-side key), NCBI E-utilities, PMC, OpenAlex, Unpaywall, Europe PMC |
+| Deployment | One Docker container + Caddy (HTTPS) on the institutional VM, nightly backup of the database and the PDF volume |
+
+**Dependencies:** `jsonschema` (already used in v1). No new third-party dependencies are to be introduced.
+
+**Backend — the v1 standard-library server, extended.** v1 is built on Python's built-in HTTP server with no web framework. v2 extends that code rather than rewriting it on a new framework. The working, tested v1 logic (extraction, validation, PDF retrieval, export) carries over unchanged, and the team keeps one codebase it already understands.
+
+**Database — SQLite, single file, WAL mode.** All data lives in one SQLite database file. There is no separate database server to install, secure, patch or back up. *WAL* (write-ahead logging) is a SQLite mode in which readers are not blocked while a write is in progress, which suits a small team reading and saving at the same time. A single file also makes backup and restore simple: the database is one file to copy. SQLite is adequate at the stated scale of about two concurrent users. It would need to be revisited if that scale grew substantially.
+
+**Background jobs — one worker thread, same process.** Long tasks are recorded as rows in a `jobs` table and executed by a single worker thread inside the same server process. The browser checks the job's status at intervals ("polls") to show progress. This avoids operating a separate queue service. It also keeps all writes inside one process. That matters because the application protects its read-modify-write operations on curation data with a lock that only works within a single process. If a second server process were added, that protection would silently stop working and concurrent edits could overwrite one another without any error. **The system shall therefore run as exactly one server process.**
+
+**File storage — local volume, authenticated access only.** Paper PDFs are stored on a disk volume attached to the container. They are never exposed as public static files. Every PDF is delivered through an endpoint that first checks the user is logged in and entitled to see the project the paper belongs to. Many papers are under publisher licence, and the stored collection must not become publicly downloadable.
+
+**Authentication — email and password, no email sending.** Users log in with an email address and password. Passwords are hashed with scrypt, a deliberately slow hashing function designed to resist brute-force guessing, available in Python's standard library. Login sessions are stored on the server in the database. The browser holds only an opaque session identifier in an *httpOnly* cookie, which page scripts cannot read, so it cannot be stolen by malicious script injected into a page. The system does not send email. There is no "forgot password" link, no email verification and no email invitation. Account creation and password resets are done manually by a superadmin (M18).
+
+**Frontend — vanilla JavaScript and pdf.js (v1).** The v1 browser interface is retained: plain JavaScript modules with no build step, and Mozilla's pdf.js library for rendering PDFs and highlighting evidence within them.
+
+**External services — one server-side OpenRouter key.** All model calls go through a single institutional OpenRouter key held on the server. In v1, each user supplied their own key. In v2, users never see or supply one, and the key is never sent to the browser.
+
+**Deployment — one container plus Caddy, nightly backup.** The whole application ships as one Docker container. Caddy sits in front of it, obtains and renews the HTTPS certificate, and forwards requests. The database file and the PDF volume are backed up every night.
+
+**No new dependencies.** The only third-party Python library is `jsonschema`, which v1 already uses. Keeping the dependency list this short reduces maintenance and security-patching effort on the institutional server and simplifies approval.
+
+### 2.6 Assumptions and dependencies
+
+- The institution provides the virtual machine, a DNS name for it, and outbound internet access to the services listed above.
+- The institution provides and funds one OpenRouter account and key.
+- A superadmin is available to create accounts and reset passwords, since the system cannot do this by email.
+- The user population remains near the stated scale (10–15 registered, about 2 concurrent).
+- Papers that have no open-access PDF can still be curated if someone uploads the PDF manually.
+
+---
+
+## 3. Functional requirements
+
+Each requirement below keeps the identifier (M1–M23) used in `specs.md`, so the two documents can be cross-referenced. In the text, "the system shall" marks what is mandatory.
+
+### 3.1 Authentication and roles
+
+**M1 — Login, logout and server-side sessions.**
+The system shall let a user sign in with their email address and password and sign out again. On successful login, the server shall create a session record and give the browser a cookie identifying it. Every later request is recognised as that user until they log out or the session ends. On logout, the server shall delete the session so the cookie becomes useless even if it was copied. Sessions are held on the server rather than encoded in the cookie so that an administrator can end them. For example, deactivating a user (M18) ends their access immediately instead of when some token expires. A failed login shall not reveal whether it was the email or the password that was wrong.
+
+**M2 — Three roles, enforced on the server for every endpoint.**
+The system shall support three roles: superadmin, project manager and curator. Superadmin and project manager are *account-level* roles, attached to the user's account. Curator is a *per-project* role, attached to a user's membership of a specific project. Every request the server receives shall be checked against these roles before any data is read or changed. Hiding a button in the interface is not sufficient: a user who crafts a request by hand must receive the same refusal as one who uses the interface. A request that fails the check shall be rejected without revealing data from the project concerned.
+
+### 3.2 Curator functions
+
+**M3 — Work queue.**
+When a curator opens a project, the system shall show them a work queue with two parts. The first, "my papers", lists the papers assigned to them or claimed by them. The second is the unassigned pool, the papers nobody has taken yet. The curator shall be able to filter the queue by paper status (see M9), for example to see only papers still in progress. The queue is the curator's starting point: it answers "what should I work on next?" without them having to consult a separate spreadsheet or task list.
+
+**M4 — Paper view (v1).**
+Opening a paper shall show the PDF alongside the extracted fields. For each field the curator can see the value the AI proposed and the evidence it cited. Clicking the evidence shall scroll the PDF to that passage and highlight it, so the claim can be checked against the source at a glance. The fields can be viewed in two modes. **List mode** shows every field at once. **Card mode** shows one field at a time with next/previous controls and automatically highlights that field's evidence. Card mode is intended for careful field-by-field review. This view exists in v1 and shall be carried over to the multi-user setting.
+
+**M5 — Per-field edit and confirm, with the AI value preserved (v1).**
+For every field, the curator shall be able to change the value and mark it as confirmed. The AI's original proposal (`aiValue`) shall be stored separately and shall never be changed, whatever edits follow. The interface shall show when the curated value differs from what the AI proposed. This pairing is the core of AnnotAid's audit trail. It records, field by field, where the model was right and where a human corrected it. That record is needed to trust the curated data, and to measure how well different models perform.
+
+**M6 — Select text in the PDF to set a field value (v1).**
+The curator shall be able to select text in the PDF viewer and apply it directly as the value of the current field, rather than retyping it. For list-type fields the selection is added as a new entry. For single-value fields it replaces the value. For fields with a fixed set of allowed values, it is matched against that set. This changes only the curated value. The `aiValue` and the AI's cited evidence are left untouched, consistent with M5.
+
+**M7 — Only the assigned curator may edit a paper.**
+A paper shall be editable only by the curator it is assigned to, or by the curator who claimed it from the pool. Other curators on the project may be able to see it but shall not be able to change it. This prevents two people unknowingly working on the same paper and overwriting each other's decisions. It also means every paper has one clearly responsible person. The rule shall be enforced on the server (M2). Project managers and superadmins, who can reassign papers (M17), change the responsible curator by reassigning rather than by editing around them.
+
+**M8 — Every edit and confirmation is attributed and time-stamped.**
+Whenever a field value is changed or confirmed, the system shall record which user did it and when. In a single-user tool this was unnecessary. With several curators, and papers that can be reassigned, the project needs to be able to answer "who decided this value, and when?" for any field in any paper. This record also supports quality review and resolving disagreements.
+
+**M9 — Paper status lifecycle.**
+Each paper shall carry a status describing where it is in the curation process:
+
+- **Unassigned.** The paper is in the project, typically with its AI extraction complete, but nobody is responsible for it yet. It sits in the pool.
+- **In progress.** A curator is responsible for the paper, either because a manager assigned it to them (M17) or because they claimed it from the pool (M3). Editing (M5, M6) takes place in this state.
+- **Submitted.** The curator has finished reviewing the paper and declared their work on it complete.
+- **Excluded** or **Unextractable.** The curator has decided the paper cannot or should not be curated. *Excluded* covers a paper that turns out to be out of scope for the project. *Unextractable* covers a paper that is in scope but from which the required information cannot be obtained (for example, it simply does not report it). In both cases the system shall require the curator to give a written reason, so the decision can be reviewed later.
+
+The normal path is unassigned → in progress → submitted. Excluded and unextractable are the alternative endings. The status shall be visible in the work queue (M3) and usable as a filter. This release does not define a transition back out of submitted, excluded or unextractable (see Section 6).
+
+**M10 — Autosave to the server.**
+The curator's work shall be saved to the server continuously as they work, without them having to press a save button. Closing the browser tab, losing the network briefly or switching computers shall not lose confirmed or edited values beyond the last few seconds of activity. Curating one paper can take a long time, and a single lost session would cost more than the tool saves.
+
+### 3.3 Project manager functions
+
+A project manager can do everything a curator can (Section 3.2) within the projects they manage, and additionally:
+
+**M11 — Create projects.**
+A project manager shall be able to create a new project. The user who creates it automatically becomes that project's manager. A project is the unit of work in AnnotAid: its own papers, its own schema and its own team. Separate studies are kept apart and can run side by side on the same installation.
+
+**M12 — Schema editor (v1).**
+A project manager shall be able to define and edit the project's schema through a visual editor. This covers the list of features (fields) to extract, including their types, descriptions and allowed values, and repeating groups such as a list of variants. It also covers the system prompt (the standing instructions given to the model), the model to use, and the parse engine. The schema decides what the AI is asked for and in what shape the answers must come back, so it is the most consequential setting in a project. The editor shall validate the schema and show a preview of the prompt that will be sent to the model, so the manager can see the effect of their descriptions before paying for an extraction. This editor exists in v1 and shall be carried over.
+
+**M13 — Add curators to the project.**
+A project manager shall be able to add existing user accounts to their project as curators, and remove them. Managers do not create accounts themselves; that is a superadmin function (M18). A manager chooses from people who already have an account. This keeps account creation, and therefore control over who can reach the system at all, with the superadmin, while letting managers staff their own projects.
+
+**M14 — Add papers, as a background job (v1).**
+A project manager shall be able to bring papers into the project in four ways:
+
+1. a single PMID;
+2. a file containing many PMIDs;
+3. a single PDF upload;
+4. a bulk upload of many PDFs.
+
+For PMIDs, the system shall verify the identifier with NCBI and then try, in turn, several open-access sources (PubMed Central, OpenAlex, Unpaywall, Europe PMC and others) to retrieve the PDF automatically. Each paper in a batch shall appear as its own row with its own progress and outcome: added, already in the project, or failed with a stated reason. Failed rows shall be retryable. When no open-access PDF can be found, the manager shall be offered a *PDF fallback*: they upload the PDF themselves for that specific PMID. Because a large batch can take many minutes, the import shall run as a background job (M21). The manager can then leave the page and return to see its progress, rather than keeping a browser tab open for the duration. The single-user version of this flow exists in v1.
+
+**M15 — Duplicate detection (v1).**
+When papers are added, the system shall detect papers already in the project, first by the content of the PDF file and second by PMID. The content check uses a hash, a fingerprint computed from the file's bytes, so the same PDF uploaded twice under different file names is still recognised. A duplicate shall be reported as "already in the project" rather than as an error, and shall not be added a second time. Duplicates are checked within a project: the same paper may deliberately be curated independently in two different projects.
+
+**M16 — Bulk extraction as a background job.**
+A project manager shall be able to start AI extraction over many papers at once. The extraction shall run as a background job (M21), because each paper can take a minute or more with the model. The system shall show the status of each paper individually (waiting, running, done or failed). Where a paper fails, it shall show the error, and the manager shall be able to retry that paper without re-running the ones that succeeded.
+
+**M17 — Assign and reassign papers.**
+A project manager shall be able to assign each paper to a specific curator, or leave it in the pool for curators to claim (M3). They shall also be able to reassign a paper from one curator to another, for example when someone leaves the project or a workload needs rebalancing. Assignment is how the manager divides the work. Combined with M7, it determines who may edit each paper.
+
+### 3.4 Superadmin functions
+
+A superadmin can do everything a project manager can (Section 3.3), across every project, and additionally:
+
+**M18 — Manage user accounts.**
+A superadmin shall be able to create user accounts, set each account's role, reset a user's password manually, and deactivate users and their project memberships. Because the system sends no email (Section 2.5), the superadmin is the only route by which accounts are created and forgotten passwords are replaced. Users are *deactivated* rather than deleted. A deactivated user can no longer log in and their active sessions end, but their name stays attached to the edits and confirmations they made (M8). Deleting the account would break the audit trail.
+
+**M19 — Archive and read every project.**
+A superadmin shall be able to open and read any project, whether or not they are a member of it, and shall be able to archive a project. Archiving retires a finished or abandoned project from active use without destroying its data, which remains available for reference and audit. Read access to all projects lets the administrator oversee the system and deal with problems in any project.
+
+**M20 — Assign additional project managers.**
+A superadmin shall be able to add further project managers to a project beyond the one who created it. This lets responsibility for a project be shared, or handed over when its original manager is unavailable or leaves.
+
+### 3.5 Platform functions
+
+**M21 — Background job runner.**
+The system shall provide a background job runner that executes long operations (bulk paper import, M14; bulk extraction, M16) independently of the user's browser. Every job shall have a visible state: **queued** (waiting to start), **running**, **done**, **failed** or **cancelled**. When a job fails, the error text shall be recorded and shown, so the user knows what went wrong rather than just that something did. The browser shall obtain progress by checking the job's status periodically. As described in Section 2.5, jobs run on a single worker thread inside the one server process.
+
+**M22 — Deployment with Docker and Caddy.**
+The system shall be packaged as a single Docker container and deployed on the institutional virtual machine behind Caddy, which provides HTTPS. Deployment and upgrade shall consist of replacing that one container. The database and PDF storage live on persistent volumes, so they survive container replacement.
+
+**M23 — Nightly backup with a tested restore.**
+The database file and the PDF volume shall be backed up every night. It shall also be demonstrated, before go-live, that a backup can actually be restored to a working system. A backup that has never been restored is an untested assumption. The restore test is what turns it into a real safeguard.
+
+---
+
+## 4. Non-functional requirements
+
+These requirements describe qualities of the system as a whole, not individual features. Each notes the functional requirements or constraints it derives from.
+
+### 4.1 Security
+
+**NFR-1 — Authenticated access only.** Apart from the login page, every page, API endpoint and file shall require a valid session. An anonymous request shall receive nothing but a refusal or a redirect to login. *(M1, M2)*
+
+**NFR-2 — Authorisation checked on the server, on every request.** Role and project-membership checks shall happen on the server for every request, as described in M2 and M7. The browser interface may hide actions a user is not allowed to take, as a convenience. It shall never be the thing that prevents them. *(M2, M7)*
+
+**NFR-3 — Password storage.** Passwords shall be stored only as salted scrypt hashes, never in plain or reversible form. Nobody, including a superadmin or someone holding a copy of the database, shall be able to read a user's password back. *(Section 2.5)*
+
+**NFR-4 — Session protection.** Session cookies shall be httpOnly, so page scripts cannot read them. They shall be marked Secure, so they are sent only over HTTPS. Logout (M1) and deactivation (M18) shall invalidate the server-side session immediately. *(M1, M18)*
+
+**NFR-5 — Encrypted transport.** All traffic between users and the system shall use HTTPS, terminated by Caddy. The application shall not be reachable over plain HTTP except for a redirect to HTTPS. *(M22)*
+
+**NFR-6 — Protection of stored PDFs.** PDFs shall be served only through authenticated endpoints that check the user's access to the owning project. There shall be no public or guessable URL for any stored file. *(Section 2.5)*
+
+**NFR-7 — Secret handling.** The OpenRouter key and any other service credentials shall be held only on the server. They shall never be sent to the browser, written to logs, or included in exports. The per-user, unencrypted key storage of v1 shall not be used in the hosted version. *(Section 2.5)*
+
+**NFR-8 — Limited outbound access.** The server needs outbound network access only to OpenRouter and the named literature services (NCBI E-utilities and NCBI web, PMC and its open-data store, OpenAlex, Unpaywall, Europe PMC). The system shall work under a firewall policy that permits only these destinations.
+
+### 4.2 Auditability and data integrity
+
+**NFR-9 — Immutable AI output.** Once recorded, an `aiValue` shall never be modified by any user action or any later process. The curated value is stored separately. *(M5, M6)*
+
+**NFR-10 — Complete attribution.** Every change to a curated value or confirmation state shall be attributable to a user and a time. That attribution shall survive deactivation of the user concerned. *(M8, M18)*
+
+**NFR-11 — No silent lost updates.** Concurrent activity (two users saving, or a background job writing while a curator saves) shall never cause one save to silently overwrite another. The single-process design (Section 2.5) and the single-editor rule (M7) together provide this. Any change to the deployment that adds server processes must preserve it. *(M7, M10, M21)*
+
+**NFR-12 — No duplicate papers within a project.** A project shall never hold the same PDF content or the same PMID twice. *(M15)*
+
+### 4.3 Reliability and recoverability
+
+**NFR-13 — Durability of curation work.** A curator's edits shall reach the server within seconds of being made (M10). Work shall not depend on the browser tab staying open. *(M10)*
+
+**NFR-14 — Isolation of failures in batches.** In bulk import and bulk extraction, a failure on one paper shall not stop or undo the others. Successful items are kept, and failed items are reported individually with their reason and can be retried. *(M14, M16, M21)*
+
+**NFR-15 — Recoverability.** The system shall be restorable from the most recent nightly backup to a working state, and this shall have been demonstrated (M23). With nightly backups, the most work that can be lost in a total loss of the server is the work done since the previous night's backup. This is accepted for this release. *(M23)*
+
+### 4.4 Performance and capacity
+
+**NFR-16 — Supported scale.** The system shall support about 10–15 registered users with about 2 working at the same time. The architecture (single process, SQLite, single worker thread) was chosen for this scale. A substantial increase in concurrent users shall trigger a review of that architecture rather than simply adding server processes (see NFR-11).
+
+**NFR-17 — Responsiveness under long operations.** Operations that may take longer than a normal page request, such as bulk import and model extraction, shall run as background jobs. They shall not keep the user's request waiting. The interface shall show progress for them rather than appearing frozen. *(M14, M16, M21)*
+
+**NFR-18 — Operational limits.** The system shall accept uploads of up to 64 MB per request, to accommodate large PDFs. It shall allow each model call up to 300 seconds before treating it as failed. The reverse proxy (Caddy) shall be configured with limits at least this generous, so that it does not cut off valid uploads or healthy extractions before the application would.
+
+No numerical response-time or availability targets have been set for this release. If required, they are to be agreed with the hosting provider (see Section 6).
+
+### 4.5 Usability
+
+**NFR-19 — Continuity with v1.** Users of v1 shall find the curation experience unchanged: the same paper view, evidence highlighting, list and card modes, and select-to-set behaviour. v2 adds accounts, queues and assignment around that core without altering it. *(M4, M5, M6)*
+
+**NFR-20 — Visible progress and clear errors.** Every long-running operation shall show its progress. Every failure shall be reported with a specific, human-readable reason, together with a way forward where one exists (retry, or upload the PDF instead). *(M14, M16, M21)*
+
+**NFR-21 — No installation for users.** Users shall need only a web browser. Nothing is installed on their own computer.
+
+### 4.6 Maintainability and portability
+
+**NFR-22 — Minimal dependencies.** The server shall depend only on the Python standard library and `jsonschema`. Introducing any further third-party dependency is a change to this specification. *(Section 2.5)*
+
+**NFR-23 — Reuse of v1.** Capabilities marked (v1) shall be extended in place rather than reimplemented, so that their existing tested behaviour is preserved.
+
+**NFR-24 — Single-artifact deployment.** The complete application shall be deployable as one Docker container plus Caddy. Moving it to another virtual machine shall require only that container, its configuration, and the database and PDF volumes. *(M22)*
+
+---
+
+## 5. Traceability
+
+| Requirement | Area | Related non-functional requirements |
+|---|---|---|
+| M1 | Login, logout, sessions | NFR-1, NFR-4 |
+| M2 | Roles enforced server-side | NFR-1, NFR-2 |
+| M3 | Work queue | — |
+| M4 | Paper view (v1) | NFR-19 |
+| M5 | Edit and confirm, immutable `aiValue` (v1) | NFR-9, NFR-19 |
+| M6 | Select text to set value (v1) | NFR-9, NFR-19 |
+| M7 | Single editor per paper | NFR-2, NFR-11 |
+| M8 | Attribution of edits | NFR-10 |
+| M9 | Paper status lifecycle | — |
+| M10 | Autosave | NFR-11, NFR-13 |
+| M11 | Create projects | — |
+| M12 | Schema editor (v1) | — |
+| M13 | Add curators | — |
+| M14 | Add papers as a job (v1) | NFR-14, NFR-17, NFR-18, NFR-20 |
+| M15 | Duplicate detection (v1) | NFR-12 |
+| M16 | Bulk extraction as a job | NFR-14, NFR-17, NFR-18, NFR-20 |
+| M17 | Assign / reassign | — |
+| M18 | User account management | NFR-4, NFR-10 |
+| M19 | Archive and read all projects | — |
+| M20 | Additional project managers | — |
+| M21 | Background job runner | NFR-11, NFR-14, NFR-17, NFR-20 |
+| M22 | Docker + Caddy deployment | NFR-5, NFR-24 |
+| M23 | Nightly backup, tested restore | NFR-15 |
+
+---
+
+## 6. Open issues
+
+The following points are not settled by this specification and should be decided before or during implementation:
+
+1. **Leaving a final status.** Whether, and by whom, a paper can be moved back from *submitted*, *excluded* or *unextractable* to *in progress* (for example, if a manager rejects a submission).
+2. **Effect of archiving.** Whether an archived project becomes strictly read-only for all users, and whether it can be un-archived.
+3. **Jobs interrupted by a restart.** What happens to a job that is *running* when the server is restarted: whether it is resumed, retried or marked as failed.
+4. **Backup retention and location.** How many nightly backups are kept, and where they are stored. They should not be on the same disk as the live data.
+5. **Service levels.** Whether the institution requires formal response-time or availability targets (see NFR-18).

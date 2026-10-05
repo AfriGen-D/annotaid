@@ -31,6 +31,8 @@ header{
 header .mark{font-family:var(--serif);font-weight:600;font-size:20px;letter-spacing:-.01em;color:var(--bad)}       /* "Annot" — racing red */
 header .mark em{font-style:italic;color:var(--ink)}                                                              /* "Aid" — pitch black */
 header .sub{font-size:11px;color:#B9D6AD;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em}
+/* DOIs and filenames are case-sensitive — never uppercase them */
+header .sub.exact{text-transform:none;letter-spacing:.02em}
 header .spacer{flex:1}
 header .gstat{display:flex;flex-direction:column;align-items:flex-end;line-height:1.15;margin-right:6px}
 header .gstat #globalstat{font-family:var(--mono);font-size:14px;font-weight:500;color:#EAF3E5}
@@ -72,6 +74,8 @@ header .icon-btn.on{background:#fff;color:var(--gold);border-color:#fff}
 .menu button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;text-align:left;
   border:none;background:none;padding:10px 13px;font-size:12.5px;color:var(--ink)}
 .menu button:hover{background:var(--accent-soft)}
+.menu button:disabled{opacity:.4;cursor:not-allowed}
+.menu button:disabled:hover{background:none}
 .menu .mhint{font-family:var(--mono);font-size:10px;color:var(--ink-faint)}
 
 /* ---- three-pane layout ---- */
@@ -153,6 +157,7 @@ body.col-resizing .textLayer{pointer-events:none}
 }
 .placeholder .big{font-family:var(--serif);font-size:19px;color:var(--ink)}
 .placeholder .hint{font-size:13px;max-width:360px;line-height:1.6}
+.placeholder.abstract-only .hint{max-width:520px;max-height:60vh;overflow-y:auto;text-align:left;white-space:pre-wrap}
 .placeholder code{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--line);padding:1px 5px;border-radius:5px}
 
 /* ---- right pane: pmid box ---- */
@@ -511,3 +516,264 @@ body.col-resizing .textLayer{pointer-events:none}
     animation:none!important;
   }
 }
+
+/* =========================================================================
+   Home screen — the project picker (home.html / home.js)
+   A separate document from the curation app, so it gets a centred card grid
+   rather than a pane in the three-column layout. Same tokens throughout.
+   ========================================================================= */
+.home-body{overflow:auto}
+header .mark{text-decoration:none}
+/* the project a curator is inside, and the way back out */
+.proj-chip{
+  font-family:var(--mono);font-size:12px;color:#fff;text-decoration:none;
+  background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);
+  padding:4px 10px;border-radius:999px;max-width:260px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:.15s;
+}
+.proj-chip::before{content:"← ";opacity:.7}
+.proj-chip:hover{background:rgba(255,255,255,.26);border-color:rgba(255,255,255,.6)}
+
+/* display:block is load-bearing — the base `main` rule is the three-column
+   curation grid, and without this the whole home page renders inside its
+   250px documents track. */
+main.home{display:block;flex:1;min-height:0;overflow:auto;padding:34px 24px 60px}
+.home-inner{max-width:1080px;margin:0 auto}
+/* p removed (no more "what is a project" blurb) — the heading alone needs its
+   own bottom margin so the grid doesn't sit right under it. */
+.home-head h1{font-family:var(--serif);font-weight:600;font-size:27px;letter-spacing:-.01em;
+  margin:0 0 22px;color:var(--ink)}
+.home-notice{margin:0 0 18px;padding:11px 14px;border-radius:9px;font-size:12.5px;
+  background:var(--accent-soft);border:1px solid var(--accent-line);color:var(--ink)}
+.home-notice[hidden]{display:none}
+
+.proj-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
+
+/* the whole card is the link — no small target to aim at */
+.proj-card{
+  position:relative;
+  display:flex;flex-direction:column;gap:9px;text-decoration:none;color:inherit;
+  background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  padding:17px 18px 14px;transition:.15s;
+}
+.proj-card:hover{border-color:var(--gold-line);box-shadow:var(--shadow);transform:translateY(-1px)}
+.pc-menu-wrap{position:absolute;top:10px;right:10px}
+.pc-menu-btn{border:1px solid transparent;background:none;color:var(--ink-faint);
+  width:26px;height:26px;border-radius:7px;font-size:16px;line-height:1;cursor:pointer;
+  display:flex;align-items:center;justify-content:center}
+.pc-menu-btn:hover{background:var(--surface-2);color:var(--ink);border-color:var(--line)}
+/* room for the ellipsis so a long name never runs under it */
+.pc-name{font-family:var(--serif);font-weight:600;font-size:18px;line-height:1.25;color:var(--ink);
+  padding-right:30px}
+.pc-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.5;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:3em}
+.pc-chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:10.5px;color:var(--gold);background:var(--gold-soft);
+  border:1px solid var(--gold-line);padding:2px 8px;border-radius:999px}
+.pc-stats{display:flex;gap:16px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line-soft)}
+.pc-stat{display:flex;flex-direction:column;line-height:1.2}
+.pc-stat .v{font-family:var(--mono);font-size:15px;font-weight:500;color:var(--ink)}
+.pc-stat .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint)}
+/* papers still waiting on an identity are the only actionable number here */
+.pc-stat.warn .v{color:var(--accent)}
+.pc-stat.warn .l{color:var(--accent)}
+.pc-foot{font-size:10.5px;color:var(--ink-faint);font-family:var(--mono)}
+
+.proj-empty{
+  grid-column:1/-1;display:flex;flex-direction:column;align-items:center;gap:12px;
+  padding:56px 24px;text-align:center;background:var(--surface);
+  border:1px dashed var(--line);border-radius:12px;color:var(--ink-faint);
+}
+.proj-empty .big{font-family:var(--serif);font-size:19px;color:var(--ink)}
+.proj-empty .hint{font-size:13px;max-width:44ch;line-height:1.6}
+
+/* the new-project dialog reuses .modal-*; it just needs a textarea */
+.modal-row textarea{
+  flex:1;border:1px solid var(--line);border-radius:7px;padding:9px 11px;
+  font-family:var(--sans);font-size:13px;line-height:1.55;background:var(--surface-2);
+  color:var(--ink);resize:vertical;box-sizing:border-box;
+}
+.modal-row textarea:focus{outline:none;border-color:var(--gold);background:#fff;
+  box-shadow:0 0 0 3px var(--gold-soft)}
+.modal-hint.seed-note{border-top:1px dashed var(--line-soft);padding-top:11px}
+
+/* =========================================================================
+   Identity box — the PMID box plus its second, legitimate answer
+   ========================================================================= */
+.pmid-box .pmid-err{margin-top:8px;font-size:11.5px;color:var(--bad);font-weight:500}
+.pmid-box .pmid-err[hidden]{display:none}
+.pmid-alt{margin-top:11px;padding-top:10px;border-top:1px dashed var(--gold-line)}
+.pmid-alt-body{margin-top:9px}
+.pmid-alt-body[hidden]{display:none}
+.linkish{
+  border:none;background:none;padding:0;font-family:var(--sans);font-size:11.5px;
+  color:var(--gold);font-weight:600;text-decoration:underline;cursor:pointer;
+}
+.linkish:hover{color:var(--ink)}
+/* the stepper's "No PMID" — a real second route, but the quieter of the two */
+.btn.ghost-btn{background:transparent;border-style:dashed;color:var(--ink-soft)}
+.btn.ghost-btn:hover{background:var(--surface-2);border-style:solid}
+
+/* =========================================================================
+   Feature schema editor (featureSchemaEditor.js / projectCreate.js)
+   ========================================================================= */
+.fe-modal{max-width:760px}
+.fe-modal .modal-body{max-height:66vh;overflow:auto}
+
+.fe-list{display:flex;flex-direction:column;gap:10px;margin:12px 0}
+.fe-empty{padding:22px;text-align:center;font-size:12.5px;color:var(--ink-faint);
+  border:1px dashed var(--line);border-radius:10px;background:var(--surface-2)}
+
+.fe-card{border:1px solid var(--line);border-radius:10px;padding:11px 12px;
+  background:var(--surface);display:flex;flex-direction:column;gap:8px}
+/* a repeating group reads as a container, not another field */
+.fe-card.fe-group{background:var(--surface-2);border-color:var(--gold-line)}
+.fe-card.nested{background:var(--surface);border-color:var(--line-soft);padding:9px 10px}
+
+.fe-head{display:flex;gap:7px;align-items:center}
+.fe-input{border:1px solid var(--line);border-radius:6px;padding:6px 9px;
+  font-size:12.5px;background:var(--surface);color:var(--ink);min-width:0}
+.fe-input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-soft)}
+.fe-name{flex:0 0 205px;font-family:var(--mono);font-weight:500}
+.fe-label{flex:1}
+.fe-type{flex:0 0 148px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;
+  font-size:12px;font-family:var(--sans);background:var(--surface);color:var(--ink)}
+.fe-type-fixed{flex:0 0 148px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--gold);font-weight:600;text-align:center}
+
+.fe-move{display:flex;gap:3px;flex:none}
+.fe-icon{width:26px;height:26px;border:1px solid var(--line);border-radius:6px;
+  background:var(--surface);color:var(--ink-soft);font-size:13px;line-height:1;
+  display:inline-flex;align-items:center;justify-content:center;transition:.12s}
+.fe-icon:hover:not(:disabled){border-color:var(--ink-soft);background:var(--surface-2)}
+.fe-icon:disabled{opacity:.3;cursor:not-allowed}
+.fe-icon.fe-del:hover{border-color:var(--bad);color:var(--bad);background:var(--bad-bg)}
+
+/* the description is the field that actually reaches the model, so it gets room */
+.fe-desc{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;
+  font-family:var(--sans);font-size:12.5px;line-height:1.5;background:var(--surface-2);
+  color:var(--ink);resize:vertical;box-sizing:border-box}
+.fe-desc:focus{outline:none;border-color:var(--gold);background:#fff;
+  box-shadow:0 0 0 3px var(--gold-soft)}
+
+.fe-opts{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.fe-check{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
+  color:var(--ink-soft);cursor:pointer}
+.fe-check input[type=checkbox]{accent-color:var(--gold);cursor:pointer}
+.fe-num{width:62px;border:1px solid var(--line);border-radius:6px;padding:4px 7px;
+  font-family:var(--mono);font-size:12px;background:var(--surface);color:var(--ink)}
+.fe-row{display:flex;gap:8px;align-items:center}
+.fe-row .fe-input{flex:1}
+.fe-lab{font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-faint);flex:0 0 110px}
+
+.fe-sub-lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--gold);font-weight:600;margin-top:2px}
+.fe-sub{display:flex;flex-direction:column;gap:7px;padding-left:12px;
+  border-left:2px solid var(--gold-line)}
+.fe-add-field{align-self:flex-start;font-size:11.5px;padding:5px 10px}
+
+.fe-actions{display:flex;gap:8px;margin-top:2px}
+
+/* live verdict from the server — the only validator there is */
+.fe-live{margin:10px 0;padding:9px 12px;border-radius:8px;font-size:12px;line-height:1.5}
+.fe-live.ok{background:var(--ok-bg);color:var(--ok)}
+.fe-live.bad{background:var(--bad-bg);color:var(--bad);font-weight:500}
+
+.fe-seed{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.fe-seed .btn input[type=file]{display:none}
+
+.fe-review-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.55;margin-bottom:12px}
+.fe-facts{display:flex;gap:22px;flex-wrap:wrap;padding:12px 0;
+  border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  margin-bottom:14px}
+/* the prompt is what the project actually does — show it before any money is spent */
+.fe-prompt{max-height:230px;overflow:auto;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin:6px 0 0;
+  font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--ink-soft);
+  white-space:pre-wrap;word-break:break-word}
+
+/* =========================================================================
+   Curator-declared group row identity (groupItemsList.js) — the AI fills in
+   values for these, it never invents or names them. Shared by the curation
+   pane (main.js renderGroupItemsPanel) and the "Add Paper(s)" stepper's
+   "variants" step (addPapersModal.js), one card per paper there.
+   ========================================================================= */
+.gi-panel{border:1px solid var(--gold-line);border-radius:10px;margin:10px 12px;
+  padding:12px;background:var(--gold-soft)}
+.gi-head{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+  font-weight:600;color:var(--gold)}
+.gi-desc{font-size:11.5px;color:var(--ink-soft);margin-top:5px;line-height:1.5}
+.gi-hint{font-size:11px;color:var(--ink-faint);margin-top:7px;line-height:1.5}
+.gi-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.gi-row{display:flex;align-items:center;gap:6px}
+.gi-row input{flex:1;border:1px solid var(--gold-line);border-radius:7px;padding:7px 10px;
+  font-family:var(--mono);font-size:13px;background:#fff;color:var(--ink)}
+.gi-row input:focus{outline:none;box-shadow:0 0 0 3px rgba(217,200,154,.5)}
+.gi-add{margin-top:9px;font-size:12px}
+
+.ids-mode{margin-bottom:13px}
+.variant-cards{display:flex;flex-direction:column;gap:10px;max-height:46vh;overflow:auto;
+  margin:12px 0}
+.variant-card{border:1px solid var(--gold-line);border-radius:10px;padding:11px 12px;
+  background:var(--gold-soft)}
+.variant-card-head{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
+
+/* =========================================================================
+   Repeating groups in the curation pane (groupEditor.js)
+   ========================================================================= */
+.grp{border:1px solid var(--gold-line);border-radius:10px;margin:10px 12px;
+  background:var(--surface);overflow:hidden}
+.grp-head{display:flex;align-items:center;gap:9px;padding:10px 12px;
+  background:var(--gold-soft);border-bottom:1px solid var(--gold-line)}
+.grp-head .spacer,.grp-row-head .spacer,.grp-foot .spacer{flex:1}
+.grp-name{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+  font-weight:600;color:var(--gold)}
+.grp-count{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.btn.grp-add{font-size:11.5px;padding:5px 10px}
+.grp-desc{padding:9px 12px 0;font-size:11.5px;color:var(--ink-faint);line-height:1.5}
+.grp-none{padding:14px 12px;font-size:12px;color:var(--ink-faint);text-align:center}
+
+/* one entry, collapsed to its identifier until opened */
+.grp-row{border-bottom:1px solid var(--line-soft)}
+.grp-row:last-of-type{border-bottom:none}
+.grp-row-head{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;
+  transition:background .12s}
+.grp-row-head:hover{background:var(--surface-2)}
+.grp-row.open .grp-row-head{background:var(--surface-2);
+  border-bottom:1px solid var(--line-soft)}
+.rl-caret{color:var(--ink-faint);font-size:10px;width:10px}
+.rl-name{font-family:var(--mono);font-size:12.5px;font-weight:500;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* an entry the AI never proposed — i.e. something it missed */
+.rl-origin{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;
+  padding:1px 6px;border-radius:999px;background:var(--accent-soft);
+  color:var(--accent);border:1px solid var(--accent-line);flex:none}
+.rl-prog{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)}
+.grp-row-body{padding:2px 0 6px}
+.grp-row-body .feat-group{border-bottom:1px dashed var(--line-soft)}
+.grp-row-body .feat-group:last-child{border-bottom:none}
+
+/* rejected AI entries: out of the curated set, still on the record */
+.grp-removed{border-top:1px solid var(--line-soft);background:var(--surface-2)}
+.grp-removed summary{padding:8px 12px;font-size:11.5px;color:var(--ink-faint);
+  cursor:pointer}
+.grp-removed summary:hover{color:var(--ink)}
+.grp-removed-row{display:flex;align-items:center;gap:9px;padding:6px 12px 6px 26px;
+  font-size:12px;opacity:.75}
+.grp-removed-row .rl-name{flex:1;text-decoration:line-through}
+.btn.grp-undo{font-size:10.5px;padding:3px 8px}
+
+.grp-foot{display:flex;align-items:center;gap:12px;padding:9px 12px;
+  border-top:1px solid var(--line-soft);background:var(--surface-2)}
+/* the AI claimed entries and the curator says there are none — that IS a finding */
+.grp-diverge{font-size:10.5px;color:var(--accent);font-weight:500}
+
+/* Features step — spreadsheet import toolbar (projectCreate.js) */
+.fe-sheet-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  padding:10px 12px;margin:2px 0 12px;border:1px solid var(--gold-line);
+  border-radius:9px;background:var(--gold-soft)}
+.fe-sheet-bar .btn{background:var(--surface)}
+.fe-sheet-bar a.btn{text-decoration:none}
+.fe-sheet-hint{flex-basis:100%;font-size:11.5px;color:var(--ink-soft);line-height:1.5}
+.fe-sheet-err{flex-basis:100%;margin:0}

@@ -15,9 +15,9 @@ import copy
 import os
 import re
 
-from . import util, validation
+from . import features as feat, util, validation
 from .config_loader import Config
-from .store import Store
+from .project_store import ProjectStore
 
 _PMID_RE = re.compile(r"(\d{5,9})")
 
@@ -37,17 +37,17 @@ def _model_from_filename(filename: str, pmid: str):
     return util.slugify(rest) or "imported"
 
 
-def _run_from_fields(pmid, model_id, features_obj, config: Config, source_label):
+def _run_from_fields(uid, model_id, features_obj, config: Config, source_label):
     """Build an extraction-run record from a flat {field: value|node} object."""
     feats = {}
-    for f in config.features:
-        name = f["name"]
+    for f in feat.leaves(config.features):
+        name = f.name
         if name in features_obj:
             canon = validation.coerce_feature(features_obj[name], f)
         else:
-            canon = {"present": False, "value": _empty(f), "evidence": None}
+            canon = {"present": False, "value": f.empty_value(), "evidence": None}
         feats[name] = {
-            "type": f["type"],
+            "type": f.type,
             "aiValue": copy.deepcopy(canon["value"]),
             "value": copy.deepcopy(canon["value"]),
             "present": canon["present"],
@@ -59,10 +59,12 @@ def _run_from_fields(pmid, model_id, features_obj, config: Config, source_label)
         }
     now = util.iso_now()
     return {
-        "pmid": pmid,
+        "uid": uid,
         "modelId": model_id,
         "modelLabel": model_id,
         "promptId": "import",
+        "promptHash": None,   # not our prompt — the output came from elsewhere
+        "promptText": None,
         "source": "import",
         "parseEngine": "native",
         "requestedAt": now,
@@ -70,16 +72,13 @@ def _run_from_fields(pmid, model_id, features_obj, config: Config, source_label)
         "status": "ok",
         "error": None,
         "features": feats,
+        # The import formats are flat {field: value} files, so they carry nothing
+        # for a repeating group. Empty-and-absent is the truthful record of that:
+        # the file asserted no entries, rather than us pretending it did.
+        "groups": {g.name: {"present": False, "rows": []}
+                   for g in feat.groups(config.features)},
         "importedFrom": source_label,
     }
-
-
-def _empty(f):
-    if f["type"].startswith("array"):
-        return []
-    if f["type"] == "boolean":
-        return None if f.get("nullable", True) else False
-    return None
 
 
 def _looks_nested(data) -> bool:
@@ -94,7 +93,7 @@ def _looks_nested(data) -> bool:
     return False
 
 
-def import_items(store: Store, config: Config, items: list) -> dict:
+def import_items(store: ProjectStore, config: Config, items: list) -> dict:
     """items: [{filename, data, modelId?, pmid?}]. Returns a summary."""
     written, skipped, warnings = 0, 0, []
 
@@ -127,18 +126,18 @@ def import_items(store: Store, config: Config, items: list) -> dict:
                 skipped += 1
                 warnings.append(f"{filename}: could not determine PMID")
                 continue
+            # An import is matched to a paper by PMID, so a paper deliberately
+            # marked as having no PMID cannot be an import target — there is
+            # nothing in the incoming file to match it on.
             paper = store.load_paper_by_ident(pmid)
             if paper is None or not paper.get("pmid"):
                 skipped += 1
                 warnings.append(f"{filename}: no paper with confirmed PMID {pmid} (upload the PDF first)")
                 continue
-            run = _run_from_fields(pmid, model_id, fields, config, filename)
+            # runs are keyed on uid, not pmid (a paper may have no PMID at all)
+            run = _run_from_fields(paper["uid"], model_id, fields, config, filename)
             store.save_run(run)
-            # record model on paper
-            models = set(paper.get("models", []))
-            models.add(model_id)
-            paper["models"] = sorted(models)
-            store.save_paper(paper)
+            # paper["models"] is derived from the runs table — no write-back.
             written += 1
 
     return {"written": written, "skipped": skipped, "warnings": warnings}

@@ -13,7 +13,8 @@ const SEP = /[\s,;]+/;
 // PMIDs are positive integers and never carry a leading zero. Rejecting those
 // here means "0123" or a stray 13-digit ISBN is flagged in the box instead of
 // being sent to PubMed to fail slowly, one 15-second round trip at a time.
-const PMID = /^[1-9]\d{0,8}$/;
+// Exported: variantPmidText.js's line-oriented parser reuses the same rule.
+export const PMID = /^[1-9]\d{0,8}$/;
 
 function normalise(token) {
   return token

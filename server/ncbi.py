@@ -271,6 +271,43 @@ def _find_pdf(pmid: str, pmc_id: str | None, doi: str | None, unpaywall_email: s
     return None
 
 
+def fetch_abstract(pmid: str, api_key: str = "") -> str:
+    """Plain-text abstract for a PMID, used as the allowExtractionOnAbstract
+    fallback when fetch_fulltext_pdf() finds no open-access PDF.
+
+    Raises NcbiError (message safe to show to the curator) if PubMed doesn't
+    know the PMID, or the record has no abstract (e.g. a letter or erratum).
+    """
+    global _has_api_key
+    _has_api_key = bool(api_key)
+
+    pmid = str(pmid).strip()
+    if not pmid.isdigit():
+        raise NcbiError("PMID must be numeric")
+
+    try:
+        _verify_pmid_exists(pmid, api_key)
+        body = _request(
+            f"{EUTILS}/efetch.fcgi",
+            params=_eutils_params(
+                {"db": "pubmed", "id": pmid, "rettype": "abstract", "retmode": "text"},
+                api_key,
+            ),
+            timeout=20,
+        )
+    except NcbiError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise NcbiError(f"PubMed request failed (HTTP {exc.code})") from exc
+    except OSError as exc:
+        raise NcbiError(f"could not reach PubMed: {exc}") from exc
+
+    text = body.decode("utf-8", errors="ignore").strip()
+    if not text:
+        raise NcbiError(f"PMID {pmid} has no abstract on PubMed")
+    return text
+
+
 def fetch_fulltext_pdf(pmid: str, api_key: str = "", unpaywall_email: str = "") -> bytes:
     """Verify the PMID is real, then try every open-access source for its PDF.
 

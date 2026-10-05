@@ -29,6 +29,60 @@
       "type": "boolean",
       "nullable": true,
       "description": "true if the study sample combines participants from more than one distinct population/ethnicity/country; false if it is a single population. Absent if the text does not make this determinable."
+    },
+    {
+      "name": "variants",
+      "type": "group",
+      "label": "Variants",
+      "description": "One entry per genetic variant the paper reports an association for.",
+      "min": 0,
+      "maxItems": 50,
+      "features": [
+        {
+          "name": "rsid",
+          "type": "string",
+          "identifier": true,
+          "nullable": true,
+          "description": "The dbSNP rsID for this variant, e.g. rs1801133."
+        },
+        {
+          "name": "variant_id",
+          "type": "string",
+          "identifier": true,
+          "nullable": true,
+          "description": "A positional or HGVS identifier, used only when no rsID is given (e.g. chr1:11856378:G:A)."
+        },
+        {
+          "name": "gene",
+          "type": "string",
+          "nullable": true,
+          "description": "The gene this variant is mapped to, as named by the authors."
+        },
+        {
+          "name": "risk_allele",
+          "type": "enum",
+          "enumValues": [
+            "A",
+            "C",
+            "G",
+            "T"
+          ],
+          "nullable": true,
+          "description": "The allele reported as carrying the risk or effect."
+        },
+        {
+          "name": "odds_ratio",
+          "type": "number",
+          "nullable": true,
+          "description": "The odds ratio reported for this variant's association."
+        },
+        {
+          "name": "p_value",
+          "type": "number",
+          "nullable": true,
+          "description": "The p-value reported for THIS variant's association (not the study's primary p-value)."
+        }
+      ]
     }
   ],
   "models": [
@@ -53,27 +107,84 @@
       "file": "prompt.default.txt"
     }
   ],
-  "parseEngines": ["pdf-text", "mistral-ocr", "native"],
+  "parseEngines": [
+    "pdf-text",
+    "mistral-ocr",
+    "native"
+  ],
   "defaults": {
     "parseEngine": "pdf-text"
   },
   "export": {
     "csv": {
-      "rowScope": "paper-model",
+      "rowScope": "variants",
       "includeHeaderRow": true,
       "arrayDelimiter": "; ",
       "boolTrue": "TRUE",
       "boolFalse": "FALSE",
       "nullText": "",
       "columns": [
-        { "header": "pubmed_id", "source": "pmid" },
-        { "header": "model", "source": "modelId" },
-        { "header": "p_value", "source": "p_value" },
-        { "header": "countries", "source": "countries" },
-        { "header": "population_description", "source": "population_description" },
-        { "header": "sample_size", "source": "sample_size" },
-        { "header": "mixed_population", "source": "mixed_population" }
+        {
+          "header": "pubmed_id",
+          "source": "pmid"
+        },
+        {
+          "header": "doi",
+          "source": "doi"
+        },
+        {
+          "header": "model",
+          "source": "modelId"
+        },
+        {
+          "header": "p_value",
+          "source": "p_value"
+        },
+        {
+          "header": "countries",
+          "source": "countries"
+        },
+        {
+          "header": "population_description",
+          "source": "population_description"
+        },
+        {
+          "header": "sample_size",
+          "source": "sample_size"
+        },
+        {
+          "header": "mixed_population",
+          "source": "mixed_population"
+        },
+        {
+          "header": "rsid",
+          "source": "variants.rsid"
+        },
+        {
+          "header": "variant_id",
+          "source": "variants.variant_id"
+        },
+        {
+          "header": "gene",
+          "source": "variants.gene"
+        },
+        {
+          "header": "risk_allele",
+          "source": "variants.risk_allele"
+        },
+        {
+          "header": "odds_ratio",
+          "source": "variants.odds_ratio"
+        },
+        {
+          "header": "variant_p_value",
+          "source": "variants.p_value"
+        }
       ]
     }
+  },
+  "settings": {
+    "allowPapersWithoutPmid": false,
+    "allowExtractionOnAbstract": false
   }
 }

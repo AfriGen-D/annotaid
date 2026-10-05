@@ -18,19 +18,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from annotaid.server import app as app_mod  # noqa: E402
+from annotaid.server import projects as projects_mod  # noqa: E402
 from annotaid.server.config_loader import (  # noqa: E402
     ConfigError,
     load_config,
     load_secrets,
 )
-from annotaid.server.store import Store  # noqa: E402
+from annotaid.server.db import Db  # noqa: E402
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="annotaid — local biocuration gold-standard tool")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--config", default=os.path.join(HERE, "config", "schema.json"))
+    ap.add_argument("--config", default=os.path.join(HERE, "config", "schema.json"),
+                    help="starter template a NEW project is seeded from "
+                         "(each project owns its own config once created)")
     ap.add_argument("--keys", default=os.path.join(os.path.dirname(HERE), ".keys"),
                     help="dotenv-style key file (default: repo-root .keys)")
     ap.add_argument("--data-dir", default=os.path.join(HERE, "data"))
@@ -39,10 +42,14 @@ def main(argv=None):
                     help="start without requiring OPENROUTER_API_KEY (extraction disabled)")
     args = ap.parse_args(argv)
 
+    # The template is only needed to CREATE a project, so a broken one warns
+    # rather than killing a server that could still serve existing projects.
+    template = None
     try:
-        config = load_config(args.config)
+        template = load_config(args.config)
     except ConfigError as exc:
-        raise SystemExit(f"Config error: {exc}")
+        print(f"warning: starter template unusable ({exc})")
+        print("         existing projects still work; creating one needs a config.")
 
     if args.no_secrets:
         from annotaid.server.config_loader import Secrets
@@ -53,16 +60,21 @@ def main(argv=None):
         except ConfigError as exc:
             raise SystemExit(f"Secrets error: {exc}")
 
-    store = Store(args.data_dir)
+    db_path = os.path.join(args.data_dir, "annotaid.db")
+    blob_dir = os.path.join(args.data_dir, "pdfs")
+    db = Db(db_path)
     ctx = app_mod.Context(
-        config=config, secrets=secrets, store=store, static_dir=args.static_dir
+        secrets=secrets,
+        db=db,
+        projects=projects_mod.ProjectRegistry(db, blob_dir),
+        static_dir=args.static_dir,
+        template=template,
     )
     server = app_mod.build_server(ctx, args.host, args.port)
 
-    n_feat = len(config.features)
-    n_model = len(config.models)
+    n_proj = len(projects_mod.list_projects(db))
     print(f"annotaid serving http://{args.host}:{args.port}  "
-          f"({n_feat} features, {n_model} models, data={args.data_dir})")
+          f"({n_proj} project(s), db={db_path})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
