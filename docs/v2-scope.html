@@ -155,7 +155,7 @@ code { font-size: 0.9em; }
 <h2 id="step-zero-the-multi-project-version-isnt-committed-yet">Step zero: the multi-project version isn't committed yet</h2>
 <p>The app you've been building (projects, per-project SQLite store, feature editor, home screen) lives in three places:</p>
 <ul>
-<li><code>stash@{0}</code> (&quot;WIP on v1&quot;): 20 files, including the new <code>handlers.py</code> with <code>/api/projects/{pid}/...</code> routes and the removal of <code>store.py</code></li>
+<li><code>stash@{0}</code> (&quot;WIP on v1&quot;): 28 files changed, including the new <code>handlers.py</code> with <code>/api/projects/{pid}/...</code> routes and the removal of <code>store.py</code></li>
 <li><strong>untracked</strong> files on <code>main</code>: <code>server/db.py</code>, <code>projects.py</code>, <code>project_store.py</code>, <code>features.py</code>, <code>feature_sheet.py</code>, <code>identity.py</code>, <code>static/home.html</code>, 8 JS modules, <code>tests/</code></li>
 <li><code>main</code> itself is still the old single-store v1</li>
 </ul>
@@ -699,7 +699,7 @@ code { font-size: 0.9em; }
 <li><strong>Cookie:</strong> <code>HttpOnly; Secure; SameSite=Lax; Path=/</code>. <code>Secure</code> is always on in production, with a <code>--dev</code> flag to turn it off for local http testing.</li>
 <li><strong>Expiry:</strong> 12 h idle, 7 days absolute. Logout, password reset and deactivation delete the session rows immediately.</li>
 <li><strong>Login errors:</strong> always &quot;email or password is incorrect&quot;. After 5 failures per email in 15 minutes there's a short lockout (held in memory).</li>
-<li><strong>CSRF:</strong> <code>SameSite=Lax</code>, plus every POST must carry an <code>Origin</code> matching the host. nginx must pass <code>Host</code> through (it's in the runbook).</li>
+<li><strong>CSRF:</strong> <code>SameSite=Lax</code>, plus every POST and PUT (autosave) must carry an <code>Origin</code> matching the host. nginx must pass <code>Host</code> through (it's in the runbook).</li>
 <li><strong>The gate:</strong> one check in <code>app._dispatch</code>. Only <code>/login</code>, <code>POST /api/login</code> and the login page's own CSS/JS are public. Everything else without a session gets <code>401</code> (API) or a redirect to <code>/login?next=…</code> (pages). That includes <code>pdf.js</code> and every PDF.</li>
 </ul>
 </section>
@@ -791,7 +791,7 @@ code { font-size: 0.9em; }
 <li>Guard rails: you can't deactivate yourself or demote the last superadmin</li>
 </ul>
 <p><strong>Projects tab</strong>: every project including archived, open any of them (M19), archive / unarchive, add or remove managers (M20)</p>
-<p><strong>System tab</strong>: app version, DB size, <strong>last backup time</strong>, <strong>last 50 server errors</strong> (since you can't read the logs), and an optional DB snapshot download ⓓ</p>
+<p><strong>System tab</strong>: app version, DB size, <strong>last backup time</strong> + a <strong>Back up now</strong> button, <strong>last 50 server errors</strong> (since you can't read the logs), and an optional DB snapshot download ⓓ</p>
 <p><strong>Team panel</strong> (inside each project, for its managers): add existing users as curator or manager, remove them (M13)</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="12" data-paginate="true" data-theme="default" data-style="section { font-size: 24px; padding: 48px 64px; }
@@ -1284,7 +1284,7 @@ code { font-size: 0.9em; }
 .small { font-size: 0.8em; color: #555; }
 ;" data-marpit-pagination-total="22" data-size="16:9">
 <h2 id="where-it-lives-and-what-data-it-starts-with">Where it lives, and what data it starts with</h2>
-<p><strong>URL.</strong> The frontend uses absolute paths everywhere (<code>/api/...</code>, <code>/p/{pid}</code>, <code>/static/...</code>).</p>
+<p><strong>URL.</strong> The frontend uses absolute paths everywhere (<code>/api/...</code>, <code>/p/{pid}</code>, and the JS/CSS/vendor assets).</p>
 <ul>
 <li><strong>Own subdomain</strong> (e.g. <code>annotaid.&lt;institution&gt;</code>): works as is</li>
 <li><strong>Sub-path</strong> (e.g. <code>&lt;host&gt;/annotaid/</code>): needs a base-path setting threaded through <code>api.js</code>, the HTML shells and the redirects. About +2 h, and another thing to test.</li>
@@ -1344,7 +1344,7 @@ code { font-size: 0.9em; }
 <tbody>
 <tr>
 <td>1</td>
-<td>Anonymous <code>curl</code> of <strong>every</strong> route in the route table + one PDF URL + <code>/static/vendor/...</code></td>
+<td>Anonymous <code>curl</code> of <strong>every</strong> route in the route table + one PDF URL + one static asset (e.g. pdf.js)</td>
 <td>All 401 / redirect to login</td>
 </tr>
 <tr>
@@ -1384,7 +1384,7 @@ code { font-size: 0.9em; }
 </tr>
 <tr>
 <td>9</td>
-<td>Restore: take last night's backup, start a fresh instance on it</td>
+<td>Press <strong>Back up now</strong> in the System tab, then start a fresh instance on that file</td>
 <td>Projects, papers, runs, users all there</td>
 </tr>
 <tr>
