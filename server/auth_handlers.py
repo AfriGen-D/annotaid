@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from datetime import datetime, timezone
 
 from . import auth, membership, projects as projects_mod, responses
 from .net import client_ip, site_url  # noqa: F401 — site_url used by handlers
@@ -278,12 +280,22 @@ def h_admin_snapshot(ctx, req, params, body):
     project's data: treat the file accordingly."""
     if ctx.backups is None:
         return responses.send_error_json(req, 400, "backups are not configured")
-    info = ctx.backups.run_now()
-    path = os.path.join(ctx.backups.dir, info["file"])
-    responses.send_file(req, path, "application/vnd.sqlite3", extra={
-        "Content-Disposition": f'attachment; filename="{info["file"]}"',
-        "Cache-Control": "no-store",
-    })
+    # A temporary copy, not one of the kept backups: downloading repeatedly
+    # must not push the nightly copies out of the retention window.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    fd, path = tempfile.mkstemp(prefix="annotaid-snapshot-", suffix=".db")
+    os.close(fd)
+    try:
+        ctx.backups.copy_to(path)
+        responses.send_file(req, path, "application/vnd.sqlite3", extra={
+            "Content-Disposition": f'attachment; filename="annotaid-snapshot-{stamp}.db"',
+            "Cache-Control": "no-store",
+        })
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------- #

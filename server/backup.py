@@ -31,22 +31,26 @@ class Backups:
         self._stop = threading.Event()
         os.makedirs(self.dir, exist_ok=True)
 
+    def copy_to(self, target: str) -> None:
+        """A consistent copy of the live database at `target`."""
+        tmp = target + ".partial"
+        src = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        os.replace(tmp, target)
+
     def run_now(self) -> dict:
         """Write one backup now. -> {"file", "size", "at"}."""
         with self._lock:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             target = os.path.join(self.dir, f"annotaid-{stamp}.db")
-            tmp = target + ".partial"
-            src = sqlite3.connect(self.db_path, timeout=30)
-            try:
-                dst = sqlite3.connect(tmp)
-                try:
-                    src.backup(dst)
-                finally:
-                    dst.close()
-            finally:
-                src.close()
-            os.replace(tmp, target)
+            self.copy_to(target)
             self._prune()
             return self._info(target)
 
