@@ -51,7 +51,7 @@ Scope review · no code written yet
 
 The app you've been building (projects, per-project SQLite store, feature editor, home screen) lives in three places:
 
-- `stash@{0}` ("WIP on v1"): 20 files, including the new `handlers.py` with `/api/projects/{pid}/...` routes and the removal of `store.py`
+- `stash@{0}` ("WIP on v1"): 28 files changed, including the new `handlers.py` with `/api/projects/{pid}/...` routes and the removal of `store.py`
 - **untracked** files on `main`: `server/db.py`, `projects.py`, `project_store.py`, `features.py`, `feature_sheet.py`, `identity.py`, `static/home.html`, 8 JS modules, `tests/`
 - `main` itself is still the old single-store v1
 
@@ -181,7 +181,7 @@ One person can manage project A and curate in project B.
 - **Cookie:** `HttpOnly; Secure; SameSite=Lax; Path=/`. `Secure` is always on in production, with a `--dev` flag to turn it off for local http testing.
 - **Expiry:** 12 h idle, 7 days absolute. Logout, password reset and deactivation delete the session rows immediately.
 - **Login errors:** always "email or password is incorrect". After 5 failures per email in 15 minutes there's a short lockout (held in memory).
-- **CSRF:** `SameSite=Lax`, plus every POST must carry an `Origin` matching the host. nginx must pass `Host` through (it's in the runbook).
+- **CSRF:** `SameSite=Lax`, plus every POST and PUT (autosave) must carry an `Origin` matching the host. nginx must pass `Host` through (it's in the runbook).
 - **The gate:** one check in `app._dispatch`. Only `/login`, `POST /api/login` and the login page's own CSS/JS are public. Everything else without a session gets `401` (API) or a redirect to `/login?next=…` (pages). That includes `pdf.js` and every PDF.
 
 ---
@@ -215,7 +215,7 @@ In v2:
 
 **Projects tab**: every project including archived, open any of them (M19), archive / unarchive, add or remove managers (M20)
 
-**System tab**: app version, DB size, **last backup time**, **last 50 server errors** (since you can't read the logs), and an optional DB snapshot download ⓓ
+**System tab**: app version, DB size, **last backup time** + a **Back up now** button, **last 50 server errors** (since you can't read the logs), and an optional DB snapshot download ⓓ
 
 **Team panel** (inside each project, for its managers): add existing users as curator or manager, remove them (M13)
 
@@ -357,7 +357,7 @@ The question it answers: *"who decided this value, and when?"*
 
 ## Where it lives, and what data it starts with
 
-**URL.** The frontend uses absolute paths everywhere (`/api/...`, `/p/{pid}`, `/static/...`).
+**URL.** The frontend uses absolute paths everywhere (`/api/...`, `/p/{pid}`, and the JS/CSS/vendor assets).
 
 - **Own subdomain** (e.g. `annotaid.<institution>`): works as is
 - **Sub-path** (e.g. `<host>/annotaid/`): needs a base-path setting threaded through `api.js`, the HTML shells and the redirects. About +2 h, and another thing to test.
@@ -382,7 +382,7 @@ The question it answers: *"who decided this value, and when?"*
 
 | # | Test | Passes when |
 |---|---|---|
-| 1 | Anonymous `curl` of **every** route in the route table + one PDF URL + `/static/vendor/...` | All 401 / redirect to login |
+| 1 | Anonymous `curl` of **every** route in the route table + one PDF URL + one static asset (e.g. pdf.js) | All 401 / redirect to login |
 | 2 | Log out, then replay the old cookie | 401 |
 | 3 | Deactivate a user while they're logged in | Their next request gets 401 |
 | 4 | Walk the permission matrix (slide 8) with 4 accounts: superadmin, manager, curator, outsider | Every cell matches; the outsider gets 404 on project URLs |
@@ -390,7 +390,7 @@ The question it answers: *"who decided this value, and when?"*
 | 6 | Import 30 PMIDs, close the tab, come back | Job finished; duplicates reported as `duplicate`; `no_pdf` rows offer upload |
 | 7 | Restart the server mid-extraction-job | Interrupted items say so; "retry failed" re-runs only those |
 | 8 | Two curators autosaving in the same project for 30 min | No lost edits; `edited_by` correct |
-| 9 | Restore: take last night's backup, start a fresh instance on it | Projects, papers, runs, users all there |
+| 9 | Press **Back up now** in the System tab, then start a fresh instance on that file | Projects, papers, runs, users all there |
 | 10 | Admin: create user → temp password → forced change → reset → deactivate | Each step works; sessions die where they should |
 | 11 | Browser devtools on any page | No OpenRouter key anywhere in responses |
 
