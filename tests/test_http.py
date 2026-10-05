@@ -213,6 +213,11 @@ def scenarios(ctx, db, base):
           s == 403 and js.get("code") == "must_change_password", (s, js))
     s, _, h = root.get("/")
     check("pages redirect to /account until then", s == 302 and h["Location"].startswith("/account"))
+    s, _, _ = root.get("/account")
+    check("...and the account page itself loads", s == 200, s)
+    for p in ("/js/account.js", "/js/session.js", "/css/auth.css"):
+        s, _, _ = root.get(p)
+        check(f"...with its own asset {p} (else the form can't submit)", s == 200, s)
     s, js, _ = root.post("/api/me/password", {"current": "bootstrap-pass-1", "new": "short"})
     check("short new password refused", s == 400)
     s, js, _ = root.post("/api/me/password", {"current": "bootstrap-pass-1", "new": "root-password-2"})

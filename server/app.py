@@ -184,7 +184,9 @@ def make_handler(ctx: Context, router: Router):
             if not is_public:
                 if self.user is None:
                     return self._deny(401, "not logged in", is_api, path)
-                if (self.user["must_change_password"]
+                # Static files (handler None) are code, not actions: the
+                # account page needs its scripts to change the password at all.
+                if (self.user["must_change_password"] and handler is not None
                         and not getattr(handler, "allow_must_change", False)):
                     return self._deny(403, "you must change your password first",
                                       is_api, path, code="must_change_password")

@@ -25,7 +25,7 @@
     <p class="lede">AI-assisted biocuration.</p>
     <div class="auth-invite" id="loginInvite" hidden></div>
     <div class="auth-msg" id="loginMsg" hidden></div>
-    <form id="loginForm" novalidate>
+    <form id="loginForm" method="post" novalidate>
       <label class="auth-field"><span>Email</span>
         <input type="email" name="email" autocomplete="username" required autofocus></label>
       <label class="auth-field"><span>Password</span>
@@ -44,7 +44,7 @@
     <p class="lede">An administrator approves new accounts before they can sign in.</p>
     <div class="auth-invite" id="signupInvite" hidden></div>
     <div class="auth-msg" id="signupMsg" hidden></div>
-    <form id="signupForm" novalidate>
+    <form id="signupForm" method="post" novalidate>
       <label class="auth-field"><span>Full name</span>
         <input type="text" name="name" autocomplete="name" required maxlength="120"></label>
       <label class="auth-field"><span>Email</span>
