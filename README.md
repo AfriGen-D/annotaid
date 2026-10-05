@@ -1,9 +1,13 @@
 # annotaid
 
-A local, single-user biocuration gold-standard tool. An LLM proposes structured values for a
+A hosted, multi-user biocuration gold-standard tool. An LLM proposes structured values for a
 configurable set of features from an academic PDF; a human curator verifies each value against the
 source (evidence-highlighted), corrects it where needed, and confirms it. The verified output is a
 gold-standard dataset — fast to produce, evidence-grounded, and auditable.
+
+v2 runs on one server for a whole team: people sign in, project managers staff projects and hand
+out papers, curators work through their own queue, and every edit records who made it. Deployment
+is in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md); the HTTP API in [`docs/api-v2.md`](docs/api-v2.md).
 
 Work is organised into **projects**. A project owns its own feature set (plus models, prompts and
 CSV export mapping) and its own papers, so several curation efforts can run side by side and the
@@ -20,25 +24,47 @@ outbound OpenRouter call).
 
 ## Setup
 
+For a server, follow [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md). To run it on your own machine:
+
 ```bash
 cd annotaid
 pip install -r requirements.txt          # just jsonschema
 
-# API key lives server-side only. Put OPENROUTER_API_KEY in a dotenv-style key file.
+# Settings and secrets live server-side only, in a dotenv-style file.
 # By default the repo-root .keys is used (the same one the scripts/ CLIs read).
-#   OPENROUTER_API_KEY=sk-or-v1-...
-#   NCBI_API_KEY=...        optional — raises the E-utils rate limit (3 -> 10 req/s)
-#   UNPAYWALL_EMAIL=...     optional — enables the Unpaywall finder in "Add Paper(s) -> Fetch by PubMed ID(s)"
+#   OPENROUTER_API_KEY=sk-or-v1-...       AI extraction (without it, extraction is off)
+#   NCBI_API_KEY=...                      optional — raises the E-utils rate limit (3 -> 10 req/s)
+#   UNPAYWALL_EMAIL=...                   optional — enables the Unpaywall PDF finder
+#   ANNOTAID_ADMIN_EMAIL=you@example.org  first superadmin, created at start-up if none exists;
+#   ANNOTAID_ADMIN_PASSWORD=...             must be changed at first sign-in (min 10 characters)
 
 python run.py                             # serves http://127.0.0.1:8765
 ```
 
-Open http://127.0.0.1:8765 in a browser. You land on the **project list**; pick a project or create
-one, and curation happens at `/p/<projectId>`.
+Open http://127.0.0.1:8765, sign in as that superadmin, and choose a new password. Everyone else
+either requests an account at `/signup` (a superadmin approves it under **Admin**), is created by a
+superadmin (who hands over a one-time password), or joins through a project's invite link.
 
 Flags: `--port`, `--host`, `--config` (the starter template a *new* project is seeded from — each
 project owns its config once created), `--keys`, `--data-dir`, `--static-dir`, `--no-secrets`
-(start without a key; extraction disabled, useful for reviewing imported data).
+(ignore the OpenRouter key; extraction disabled), `--no-background` (no job runner / nightly
+backup thread).
+
+Over plain `http://` on your own machine the session cookie is not marked `Secure` (it is whenever
+nginx reports HTTPS), so local sign-in just works.
+
+## Accounts and roles
+
+| Role | Can |
+|---|---|
+| **Superadmin** (account) | everything, in every project; approve sign-ups, create / deactivate accounts, reset passwords, archive projects, add project managers, back up the database |
+| **Manager** (account) | create projects — and becomes the manager of each one they create |
+| **Project manager** | edit the project's schema, add papers (background import job), run AI extraction (background job), assign and reassign papers, reopen finished ones, manage the team and invite links, export |
+| **Curator** | claim papers from the pool, curate the papers assigned to them, submit them or mark them excluded / unextractable with a reason |
+
+Only the curator a paper is assigned to can change its values, and only while it is in progress.
+Every edit, confirmation and status change records who did it and when. The server checks all of
+this on every request; the interface only hides what you can't do.
 
 ## Workflow
 
@@ -178,10 +204,18 @@ from.
 run.py                entrypoint
 config/               schema.json + prompt.default.txt  (starter template only)
 server/               stdlib backend (see module docstrings)
+  app.py              HTTP server + the access gate every request passes through
+  auth.py             accounts, scrypt passwords, sessions, throttling, superadmin bootstrap
+  membership.py       project roles, team, invite links
+  workflow.py         claim / assign / submit / exclude / reopen + the edit lock
+  jobs.py             background job runner (PMID import, AI extraction)
+  backup.py           nightly online database backup
+  handlers.py         project routes;  auth_handlers.py  login / sign-up / admin routes
   features.py         typed feature/group definitions — one place for every default
-  db.py               SQLite connections + schema
+  db.py               SQLite connections + schema + forward migrations
   project_store.py    one project's papers / runs / group entries / curation state
   projects.py         project CRUD, home-screen stats, the registry handlers resolve through
+deploy/               RUNBOOK.md, systemd unit, nginx block, env template, make-release.sh
 static/               home.html (project list), index.html (curation app), css/, js/ (ES modules),
                       vendor/pdfjs (pinned 3.11.174)
   js/featureSchemaEditor.js  the visual feature editor
@@ -192,11 +226,14 @@ tests/                python -m annotaid.tests.test_store          (storage inte
                       python -m annotaid.tests.test_features       (schema rules + coercion)
                       python -m annotaid.tests.test_prompt         (prompt composition + identity)
                       python -m annotaid.tests.test_feature_sheet  (spreadsheet round-trip)
-                      python -m annotaid.tests.test_identity       (curator identity + project createdBy)
                       python -m annotaid.tests.test_group_items    (curator-declared group row identity)
+                      python -m annotaid.tests.test_http           (the real server end to end: every
+                                                                    route's access rule, sessions,
+                                                                    CSRF, roles, workflow, jobs, admin)
 data/                 runtime store (gitignored):
-  annotaid.db         projects, papers, runs, group entries, per-feature curation state,
-                      UI state
+  annotaid.db         accounts, sessions, projects, members, papers, runs, group entries,
+                      per-feature curation state, jobs, audit events, per-user UI state
+  backups/            nightly database copies (newest 14)
   pdfs/<uid>.pdf      shared content-addressed pool — uid IS sha256(bytes)[:12], so the same
                       PDF in two projects is one file
 ```
@@ -220,6 +257,10 @@ from the `visual_curator.html` / `visual_evaluator.html` prototypes.
 - **A model that returns nothing looks the same as a paper that contains nothing.** An all-absent
   reply is schema-valid, so the repair retry cannot catch it — and a long nested prompt makes it
   more likely. If a run comes back suspiciously empty, re-run it with `force`.
-- Single-user, localhost-only. No auth, no hosting — so the project-manager / curator split is a
-  convention about who authors a config document, not an enforced permission boundary.
+- **Exactly one server process.** Concurrent saves are serialised by a lock inside the process;
+  a second process on the same data directory would let saves overwrite each other.
+- **No email.** No "forgot password", no verification, no emailed invites: a superadmin resets
+  passwords and approves sign-ups, and invite links are shared by hand.
+- **Attribution is last-writer.** Each value records who last edited and who confirmed it;
+  workflow changes (claim, assign, submit, exclude, reopen, team changes) are a full history.
 - Archiving a project hides it and is not a delete: its papers, runs and PDFs stay on disk.
