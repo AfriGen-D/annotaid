@@ -36,7 +36,6 @@ from . import (
 )
 from . import schema_builder
 from .access import account_roles, copy_markers, superadmin_only
-from .extraction import run_extraction
 from .net import site_url
 
 # Decision 6: starting extraction spends money on the one shared OpenRouter
@@ -377,25 +376,6 @@ def h_upload(ctx, proj, req, params, body):
     responses.send_json(req, proj.store.load_paper(paper["uid"]), 201)
 
 
-@project_route("manager")
-def h_fetch_pmid(ctx, proj, req, params, body):
-    """Synchronous single-PMID fetch. Superseded by the import job (POST .../jobs);
-    kept until the browser has moved over."""
-    try:
-        data = _json_body(body)
-    except json.JSONDecodeError:
-        return responses.send_error_json(req, 400, "invalid JSON")
-    pmid = str(data.get("pmid", "")).strip()
-    if not pmid.isdigit():
-        return responses.send_error_json(req, 400, "PMID must be numeric")
-    job = {"created_by": req.user["id"], "params": {}}
-    state, outcome, result, error = jobs_mod.run_import_item(ctx.jobs, proj, job, pmid)
-    if state == "done" and result and outcome != "duplicate":
-        return responses.send_json(req, proj.store.load_paper(result["uid"]), 201)
-    if outcome == "duplicate":
-        return responses.send_error_json(req, 409, error or f"PMID {pmid} is already in this project")
-    return responses.send_error_json(req, 502, error or "fetch failed")
-
 
 @project_route()
 def h_identity(ctx, proj, req, params, body):
@@ -465,34 +445,6 @@ def h_pdf(ctx, proj, req, params, body):
         responses.send_bytes(req, fh.read(), "application/pdf",
                              extra={"Cache-Control": "private, max-age=3600"})
 
-
-@project_route(EXTRACT_MIN_ROLE)
-def h_extract(ctx, proj, req, params, body):
-    """Synchronous single-paper extraction. Superseded by the extraction job
-    (POST .../jobs); kept until the browser has moved over."""
-    try:
-        data = _json_body(body)
-    except json.JSONDecodeError:
-        return responses.send_error_json(req, 400, "invalid JSON")
-    if not _extraction_enabled(ctx):
-        return responses.send_error_json(req, 400, "extraction is not configured on this server")
-    ident = str(data.get("uid") or data.get("pmid") or "").strip()
-    paper = proj.store.load_paper_by_ident(ident)
-    if paper is None:
-        return responses.send_error_json(req, 404, f"no paper {ident} in this project")
-    models = data.get("models") or []
-    if not models:
-        return responses.send_error_json(req, 400, "no models specified")
-    try:
-        runs = run_extraction(
-            proj.config, ctx.secrets, proj.store, paper, models,
-            data.get("promptId"), data.get("parseEngine"),
-            force=bool(data.get("force")), context=proj.prompt_context(),
-            requested_by=req.user["id"],
-        )
-    except ValueError as exc:
-        return responses.send_error_json(req, 400, str(exc))
-    responses.send_json(req, {"runs": runs})
 
 
 @project_route("manager")
@@ -874,11 +826,9 @@ def register(router):
     router.add("POST", "/api/projects/{pid}/state", h_save_state)
     router.add("GET", "/api/projects/{pid}/papers", h_papers_list)
     router.add("POST", "/api/projects/{pid}/papers", h_upload)
-    router.add("POST", "/api/projects/{pid}/papers/fetch-by-pmid", h_fetch_pmid)
     router.add("POST", "/api/projects/{pid}/papers/{uid}/identity", h_identity)
     router.add("POST", "/api/projects/{pid}/papers/{uid}/group-items", h_save_group_items)
     router.add("GET", "/api/projects/{pid}/pdf/{id}", h_pdf)
-    router.add("POST", "/api/projects/{pid}/extract", h_extract)
     router.add("POST", "/api/projects/{pid}/import", h_import)
     router.add("GET", "/api/projects/{pid}/runs/{ident}", h_runs)
     router.add("POST", "/api/projects/{pid}/runs/{ident}", h_save_run)

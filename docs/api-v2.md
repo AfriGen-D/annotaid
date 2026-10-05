@@ -91,8 +91,6 @@ Guard rails (400 with a message): you can't deactivate yourself, and you can't d
 | POST | `/api/projects/{pid}/papers/{uid}/identity` | PM or assignee | |
 | POST | `/api/projects/{pid}/papers/{uid}/group-items` | PM or assignee | |
 | POST | `/api/projects/{pid}/import` | PM | model-output JSON import (synchronous) |
-| POST | `/api/projects/{pid}/papers/fetch-by-pmid` | PM | **deprecated**, use an import job |
-| POST | `/api/projects/{pid}/extract` | PM | **deprecated**, use an extract job |
 
 Paper (new fields): `assigneeId, curationStatus: unassigned|in_progress|submitted|excluded|unextractable, statusReason, statusBy, statusAt, addedBy`.
 Feature cell (new): `editedBy, confirmedBy` (user ids → names via `state.users`). Run: `requestedBy`. Group: `confirmedBy`.
