@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnnotAid — admin</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317282B'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='%239C7B2E' font-family='serif' font-style='italic'%3Ea%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/css/auth.css">
+<link rel="stylesheet" href="/css/admin.css">
+</head>
+<body class="admin-body">
+
+<header>
+  <a class="mark" href="/" style="text-decoration:none">Annot<em>Aid</em></a>
+  <span class="sub">Admin</span>
+  <span class="spacer"></span>
+  <span id="userMenu"></span>
+</header>
+
+<main class="admin">
+  <div class="admin-inner">
+    <h1>Administration</h1>
+
+    <nav class="admin-tabs" role="tablist">
+      <button class="admin-tab on" type="button" role="tab" data-tab="pending">
+        Pending <span class="badge" id="pendingCount" hidden>0</span></button>
+      <button class="admin-tab" type="button" role="tab" data-tab="users">Users</button>
+      <button class="admin-tab" type="button" role="tab" data-tab="projects">Projects</button>
+      <button class="admin-tab" type="button" role="tab" data-tab="system">System</button>
+    </nav>
+
+    <!-- Pending sign-ups -->
+    <section class="admin-pane" id="pane-pending" role="tabpanel">
+      <p class="pane-lede">People who asked for an account. Nobody can sign in until you approve them.</p>
+      <div class="auth-msg" id="pendingMsg" hidden></div>
+      <div id="pendingList" class="pending-list"></div>
+    </section>
+
+    <!-- Users -->
+    <section class="admin-pane" id="pane-users" role="tabpanel" hidden>
+      <div class="pane-head">
+        <p class="pane-lede">Every account. Account role decides who may create projects (manager) or administer the server (superadmin).</p>
+        <button class="btn primary" id="createUserToggle" type="button">Create user</button>
+      </div>
+      <form id="createUserForm" class="admin-form" hidden novalidate>
+        <div class="auth-msg" id="createUserMsg" hidden></div>
+        <div class="form-row">
+          <label class="auth-field"><span>Full name</span>
+            <input type="text" name="name" required maxlength="120" autocomplete="off"></label>
+          <label class="auth-field"><span>Email</span>
+            <input type="email" name="email" required maxlength="200" autocomplete="off"></label>
+          <label class="auth-field"><span>Role</span>
+            <select name="role">
+              <option value="user">User</option>
+              <option value="manager">Manager</option>
+              <option value="superadmin">Superadmin</option>
+            </select></label>
+        </div>
+        <div class="auth-actions">
+          <button class="btn primary" type="submit">Create</button>
+          <button class="btn" type="button" id="createUserCancel">Cancel</button>
+        </div>
+      </form>
+      <div class="auth-msg" id="usersMsg" hidden></div>
+      <div class="table-wrap">
+        <table class="admin-table" id="usersTable">
+          <thead><tr>
+            <th>Name</th><th>Email</th><th>Role</th><th>State</th><th>Last login</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Projects -->
+    <section class="admin-pane" id="pane-projects" role="tabpanel" hidden>
+      <p class="pane-lede">Every project, archived ones included. Archived projects are hidden from everyone until unarchived.</p>
+      <div class="auth-msg" id="projectsMsg" hidden></div>
+      <div class="table-wrap">
+        <table class="admin-table" id="projectsTable">
+          <thead><tr>
+            <th>Project</th><th>Managers</th><th class="num">Papers</th><th class="num">Finished</th>
+            <th class="num">Members</th><th>Status</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="projectsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- System -->
+    <section class="admin-pane" id="pane-system" role="tabpanel" hidden>
+      <div class="auth-msg" id="systemMsg" hidden></div>
+      <div class="sys-grid" id="sysFacts"></div>
+
+      <h2>Backups</h2>
+      <p class="pane-lede" id="lastBackup"></p>
+      <div class="sys-actions">
+        <button class="btn primary" id="backupBtn" type="button">Back up now</button>
+        <a class="btn" id="snapshotLink" href="/api/admin/snapshot" download>Download database snapshot</a>
+      </div>
+      <p class="warn-note">The snapshot contains every project's data and every account's password hash.
+        Store it somewhere only you can reach, and delete it when you no longer need it.</p>
+      <div class="table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>File</th><th class="num">Size</th><th>Taken</th></tr></thead>
+          <tbody id="backupsBody"></tbody>
+        </table>
+      </div>
+
+      <h2>Recent server errors</h2>
+      <div class="table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Type</th><th>Message</th></tr></thead>
+          <tbody id="errorsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- Temporary password, shown once -->
+<div class="modal-overlay" id="pwModal" hidden>
+  <div class="modal admin-modal" role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+    <div class="modal-head">
+      <h3 id="pwTitle">Temporary password</h3>
+    </div>
+    <div class="modal-body">
+      <p class="pw-for" id="pwFor"></p>
+      <div class="pw-row">
+        <code class="pw-value" id="pwValue"></code>
+        <button class="btn" type="button" id="pwCopy">Copy</button>
+      </div>
+      <p class="pw-note">Give this to the person yourself. It won't be shown again. They'll have to change it when they first sign in.</p>
+      <div class="auth-actions">
+        <button class="btn primary" type="button" id="pwDone">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/js/admin.js"></script>
+</body>
+</html>

@@ -9,14 +9,22 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/styles.css">
+<link rel="stylesheet" href="/css/auth.css">
+<style>
+  .user-menu{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .pc-chips .chip.role{color:var(--ink-soft);background:var(--surface-2);border:1px solid var(--line-soft)}
+  .pc-chips .chip.role.manager{color:#fff;background:var(--gold);border-color:var(--gold)}
+  .proj-empty .actions{margin-top:14px}
+  @media (max-width:520px){header{flex-wrap:wrap;gap:10px}}
+</style>
 </head>
 <body class="home-body">
 
 <header>
-  <span class="mark">Annot<em>Aid</em></span>
+  <a class="mark" href="/" style="text-decoration:none">Annot<em>Aid</em></a>
   <span class="spacer"></span>
-  <button class="btn" id="yourInfoBtn">Your info</button>
-  <button class="btn primary" id="newProjectBtn">New project</button>
+  <button class="btn primary" id="newProjectBtn" type="button" hidden>New project</button>
+  <span id="userMenu"></span>
 </header>
 
 <main class="home">
@@ -31,7 +39,6 @@
 
 <div id="toast"></div>
 <div id="newProjectModal" class="modal-overlay" hidden></div>
-<div id="userIdentityModal" class="modal-overlay" hidden></div>
 <script type="module" src="/js/home.js"></script>
 </body>
 </html>

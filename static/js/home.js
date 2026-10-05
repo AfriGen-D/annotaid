@@ -7,42 +7,49 @@
 import { $, el, toast, downloadFile } from "./dom.js";
 import { api } from "./api.js";
 import { openCreateProject } from "./projectCreate.js";
-import { openUserIdentity } from "./userIdentity.js";
+import { renderUserMenu, toLogin } from "./session.js";
 
-const S = { projects: [], global: null, template: null, identity: null };
+const S = { projects: [], global: null, template: null, me: null, canCreate: false };
 
 async function boot() {
   wireHeader();
   showReturnNotice();
+  // Who is signed in comes from the login (renderUserMenu -> getMe, which also
+  // sends a 401 to /login and a must-change-password user to /account).
+  S.me = await renderUserMenu($("#userMenu"));
   try {
-    const [g, list, identity] = await Promise.all(
-      [api.globalConfig(), api.listProjects(), api.getIdentity()]
-    );
+    const [g, list] = await Promise.all([api.globalConfig(), api.listProjects()]);
     S.global = g;
     S.projects = list.projects || [];
-    S.identity = identity;
+    S.canCreate = !!list.canCreate;
     // Optional: a project can be defined from scratch, so a missing template is
     // not an error. Fetched up front so the creation stepper opens instantly.
-    if (g.hasTemplate) {
+    if (S.canCreate && g.hasTemplate) {
       try { S.template = await api.template(); } catch (_) { S.template = null; }
     }
   } catch (err) {
+    if (err.status === 401) return toLogin();
     return fatal(`Could not reach the server: ${err.message}`);
   }
+  $("#newProjectBtn").hidden = !S.canCreate;
   render();
-  // First run: nothing saved yet. openUserIdentity's own dismissal rule (can't
-  // close while name/email are blank) is what actually blocks the homescreen —
-  // this just decides whether to open it unprompted.
-  if (!S.identity.set) {
-    openUserIdentity({ onSaved: ident => { S.identity = ident; } });
+}
+
+async function reload() {
+  try {
+    const list = await api.listProjects();
+    S.projects = list.projects || [];
+    S.canCreate = !!list.canCreate;
+  } catch (err) {
+    if (err.status === 401) return toLogin();
+    toast(`Could not reload projects: ${err.message}`);
+    return;
   }
+  render();
 }
 
 function wireHeader() {
   $("#newProjectBtn").onclick = openNewProjectModal;
-  $("#yourInfoBtn").onclick = () => {
-    openUserIdentity({ onSaved: ident => { S.identity = ident; } });
-  };
 }
 
 // main.js sends the curator here with ?missing=<id> when a bookmarked project has
@@ -71,10 +78,15 @@ function render() {
     const empty = el("div", "proj-empty");
     empty.appendChild(el("div", "big", "No projects yet"));
     empty.appendChild(el("div", "hint",
-      "A curation project defines the features to extract and holds the papers to extract them from. Create one to begin."));
-    const b = el("button", "btn primary", "Create your first project");
-    b.onclick = openNewProjectModal;
-    empty.appendChild(b);
+      "You're not on any projects yet. Ask a project manager to add you or send you an invite link."));
+    if (S.canCreate) {
+      const actions = el("div", "actions");
+      const b = el("button", "btn primary", "Create a project");
+      b.type = "button";
+      b.onclick = openNewProjectModal;
+      actions.appendChild(b);
+      empty.appendChild(actions);
+    }
     grid.appendChild(empty);
     return;
   }
@@ -96,7 +108,8 @@ function card(p) {
   const a = el("a", "proj-card");
   a.href = `/p/${encodeURIComponent(p.id)}`;
 
-  a.appendChild(cardMenu(p));
+  const menu = cardMenu(p);
+  if (menu) a.appendChild(menu);
   a.appendChild(el("div", "pc-name", p.name));
   a.appendChild(el("div", "pc-desc", p.description || "No description."));
 
@@ -104,6 +117,9 @@ function card(p) {
   // document) — just not surfaced on the card. Feature count alone answers
   // "what does this project curate", which is what the card is for.
   const chips = el("div", "pc-chips");
+  const isManager = p.myRole === "manager";
+  chips.appendChild(el("span", "chip role" + (isManager ? " manager" : ""),
+    isManager ? "Manager" : "Curator"));
   chips.appendChild(el("span", "chip", `${p.featureCount} feature${p.featureCount === 1 ? "" : "s"}`));
   a.appendChild(chips);
 
@@ -122,7 +138,14 @@ function card(p) {
   return a;
 }
 
+// Manager-only actions (export, config file) are PM routes on the server, and
+// archiving is superadmin-only. A curator gets no menu at all. Returns null when
+// there is nothing to show.
 function cardMenu(p) {
+  const isManager = p.myRole === "manager";
+  const isSuperadmin = S.me && S.me.role === "superadmin";
+  if (!isManager && !isSuperadmin) return null;
+
   const wrap = el("div", "menu-wrap pc-menu-wrap");
   const btn = el("button", "pc-menu-btn", "⋮");
   btn.type = "button";
@@ -130,26 +153,47 @@ function cardMenu(p) {
   const menu = el("div", "menu");
   menu.hidden = true;
 
-  const noCuration = !(p.stats && p.stats.confirmed > 0);
-  const dlValues = el("button", null, "Download curated values");
-  dlValues.type = "button";
-  dlValues.disabled = noCuration;
-  if (noCuration) dlValues.title = "No curated values yet";
-  dlValues.onclick = e => {
-    e.preventDefault(); e.stopPropagation();
-    downloadFile(api.exportUrlFor(p.id, "csv"));
-    menu.hidden = true;
-  };
-  menu.appendChild(dlValues);
+  if (isManager) {
+    const noCuration = !(p.stats && p.stats.confirmed > 0);
+    const dlValues = el("button", null, "Download curated values");
+    dlValues.type = "button";
+    dlValues.disabled = noCuration;
+    if (noCuration) dlValues.title = "No curated values yet";
+    dlValues.onclick = e => {
+      e.preventDefault(); e.stopPropagation();
+      downloadFile(api.exportUrlFor(p.id, "csv"));
+      menu.hidden = true;
+    };
+    menu.appendChild(dlValues);
 
-  const dlConfig = el("button", null, "Download config file");
-  dlConfig.type = "button";
-  dlConfig.onclick = e => {
-    e.preventDefault(); e.stopPropagation();
-    downloadFile(api.configFileUrl(p.id));
-    menu.hidden = true;
-  };
-  menu.appendChild(dlConfig);
+    const dlConfig = el("button", null, "Download config file");
+    dlConfig.type = "button";
+    dlConfig.onclick = e => {
+      e.preventDefault(); e.stopPropagation();
+      downloadFile(api.configFileUrl(p.id));
+      menu.hidden = true;
+    };
+    menu.appendChild(dlConfig);
+  }
+
+  if (isSuperadmin) {
+    const archive = el("button", null, "Archive project");
+    archive.type = "button";
+    archive.onclick = async e => {
+      e.preventDefault(); e.stopPropagation();
+      menu.hidden = true;
+      if (!confirm(`Archive "${p.name}"? It disappears for everyone; you can unarchive it from the Admin console.`)) return;
+      try {
+        await api.archiveProject(p.id);
+        toast("Project archived");
+        reload();
+      } catch (err) {
+        if (err.status === 401) return toLogin();
+        toast(`Could not archive: ${err.message}`);
+      }
+    };
+    menu.appendChild(archive);
+  }
 
   btn.onclick = e => {
     e.preventDefault(); e.stopPropagation();
