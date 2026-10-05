@@ -1,0 +1,1286 @@
+[
+ {
+  "group": "anon",
+  "title": "Anonymous visitor",
+  "cases": [
+   {
+    "id": "AN-01",
+    "title": "Home redirects to sign-in",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open the site root."
+    ],
+    "expected": "Lands on /login. No project names anywhere."
+   },
+   {
+    "id": "AN-02",
+    "title": "Deep link survives sign-in",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open /p/<a project id> while signed out.",
+     "Sign in with a member account."
+    ],
+    "expected": "Redirected to /login, then straight back into that project after sign-in."
+   },
+   {
+    "id": "AN-03",
+    "title": "Admin page is closed",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open /admin."
+    ],
+    "expected": "Redirected to /login."
+   },
+   {
+    "id": "AN-04",
+    "title": "API refuses strangers",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open /api/projects in the address bar."
+    ],
+    "expected": "A 401 JSON error, no data."
+   },
+   {
+    "id": "AN-05",
+    "title": "PDF links don't leak",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Signed in elsewhere, copy a PDF's URL from the network tab.",
+     "Open it in the private window."
+    ],
+    "expected": "Redirect to sign-in or 401. The PDF never downloads."
+   },
+   {
+    "id": "AN-06",
+    "title": "Wrong credentials say nothing specific",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Sign in with a real email and a wrong password.",
+     "Then with an email that has no account."
+    ],
+    "expected": "Both say \"email or password is incorrect\"."
+   },
+   {
+    "id": "AN-07",
+    "title": "Repeated failures are throttled",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Fail six sign-ins in a row for the same email."
+    ],
+    "expected": "The sixth says \"too many failed attempts — wait 15 minutes\"."
+   },
+   {
+    "id": "AN-08",
+    "title": "Sign-up form checks input",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "On /signup try: mismatched passwords, a 9-character password, a malformed email, an email that already has an account."
+    ],
+    "expected": "A clear inline error for each, and no account is created."
+   },
+   {
+    "id": "AN-09",
+    "title": "Sign-up waits for approval",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Request an account with valid details.",
+     "Try to sign in with it."
+    ],
+    "expected": "\"Request sent…\" confirmation, then sign-in says the account is waiting for approval."
+   },
+   {
+    "id": "AN-10",
+    "title": "Bad invite link",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open /join/not-a-real-token."
+    ],
+    "expected": "Sign-in page with \"This invite link isn't valid.\""
+   },
+   {
+    "id": "AN-11",
+    "title": "No open redirect after sign-in",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Open /login?next=https://example.com and sign in."
+    ],
+    "expected": "Lands on this site's home, never on the other site."
+   },
+   {
+    "id": "AN-12",
+    "title": "Password help points to the admin",
+    "roles": [
+     "Anon"
+    ],
+    "steps": [
+     "Look under the sign-in form."
+    ],
+    "expected": "Says to ask the AnnotAid administrator. There is no \"forgot password\" email flow."
+   }
+  ]
+ },
+ {
+  "group": "account",
+  "title": "Every signed-in person",
+  "cases": [
+   {
+    "id": "AC-01",
+    "title": "Temporary password forces a change",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Sign in with a temporary password (new account or after a reset).",
+     "Try to open / or a project."
+    ],
+    "expected": "Sent to /account with a \"choose a new password\" message. Every other page sends you back there."
+   },
+   {
+    "id": "AC-02",
+    "title": "Password change validation",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "On /account: wrong current password; mismatched new passwords; a new password under 10 characters; new = current."
+    ],
+    "expected": "A specific error each time, and nothing changes."
+   },
+   {
+    "id": "AC-03",
+    "title": "Password change works",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Change the password properly.",
+     "Sign out, sign in with the old one, then the new one."
+    ],
+    "expected": "Lands on home after the change. Old password fails, new one works. No passwords ever appear in the address bar."
+   },
+   {
+    "id": "AC-04",
+    "title": "Changing password signs out other browsers",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Sign in on two browsers.",
+     "Change the password in one.",
+     "Use the other."
+    ],
+    "expected": "The other browser is sent to sign-in. The one you changed it in stays signed in."
+   },
+   {
+    "id": "AC-05",
+    "title": "Sign out ends the session",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Sign out.",
+     "Press Back, and reload."
+    ],
+    "expected": "Sign-in page; the previous page's data doesn't come back."
+   },
+   {
+    "id": "AC-06",
+    "title": "User menu",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Look at the header on home and inside a project."
+    ],
+    "expected": "Your name, Account and Sign out everywhere. An Admin link only for superadmins."
+   },
+   {
+    "id": "AC-07",
+    "title": "Session survives a normal day",
+    "roles": [
+     "Any"
+    ],
+    "steps": [
+     "Stay signed in, use the app on and off for a few hours."
+    ],
+    "expected": "No surprise sign-outs (sessions last 12 h idle, 7 days at most)."
+   }
+  ]
+ },
+ {
+  "group": "curator",
+  "title": "Curator",
+  "cases": [
+   {
+    "id": "CU-01",
+    "title": "Home shows only my projects",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open home."
+    ],
+    "expected": "Only projects you're on, each with a Curator badge. No New project button, no ⋮ menu."
+   },
+   {
+    "id": "CU-02",
+    "title": "Empty home for someone on no projects",
+    "roles": [
+     "O"
+    ],
+    "steps": [
+     "Open home as the outsider."
+    ],
+    "expected": "\"You're not on any projects yet. Ask a project manager…\""
+   },
+   {
+    "id": "CU-03",
+    "title": "Manager controls are hidden",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open the project."
+    ],
+    "expected": "No Add Paper(s), Run extraction…, Import, Download, Jobs or Team."
+   },
+   {
+    "id": "CU-04",
+    "title": "Work queue sections and filter",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Look at the paper list.",
+     "Use the status filter."
+    ],
+    "expected": "My papers, Pool and a collapsed Others. Every row has a status badge, and the assignee's name when it isn't you. The filter narrows the list and is remembered after reload."
+   },
+   {
+    "id": "CU-05",
+    "title": "Unclaimed paper is read-only",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open a paper from Pool.",
+     "Try to type in a value, tick confirm, select text in the PDF."
+    ],
+    "expected": "Banner says to claim it first. Inputs and confirm are disabled, and the PDF selection offers no \"+ Add to\"."
+   },
+   {
+    "id": "CU-06",
+    "title": "Claim a paper",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Press Claim."
+    ],
+    "expected": "The paper moves to My papers as In progress, and the inputs become editable."
+   },
+   {
+    "id": "CU-07",
+    "title": "Autosave and attribution",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Change a value, wait a moment, reload the page."
+    ],
+    "expected": "The value is still there, the AI's value is still shown beside it, and it says \"edited by <you> · time\"."
+   },
+   {
+    "id": "CU-08",
+    "title": "Confirm and unconfirm",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Confirm a value, then unconfirm it."
+    ],
+    "expected": "\"confirmed by <you>\" appears, then disappears."
+   },
+   {
+    "id": "CU-09",
+    "title": "Set a value from the PDF",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Select text in the PDF and apply it to a single-value field, a list field, and a fixed-choice field."
+    ],
+    "expected": "Replaces, appends, or matches the allowed value respectively. Saved after reload."
+   },
+   {
+    "id": "CU-10",
+    "title": "Repeating group entries",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "On a paper with variants: edit a row, add a row, delete an AI row, mark the list complete."
+    ],
+    "expected": "All saved after reload. A deleted AI row is kept as deleted, not erased. \"confirmed by\" on the list."
+   },
+   {
+    "id": "CU-11",
+    "title": "Evidence and view modes",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Click a value's evidence.",
+     "Switch between list and card mode."
+    ],
+    "expected": "The PDF scrolls to and highlights the passage. Card mode highlights each field's evidence as you step through."
+   },
+   {
+    "id": "CU-12",
+    "title": "Submit",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Press Submit and confirm."
+    ],
+    "expected": "Status Submitted, read-only banner, inputs disabled."
+   },
+   {
+    "id": "CU-13",
+    "title": "Exclude needs a reason",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Claim another paper, press Exclude… and submit an empty reason.",
+     "Then give a reason."
+    ],
+    "expected": "Inline error first. Then status Excluded, with the reason shown."
+   },
+   {
+    "id": "CU-14",
+    "title": "Unextractable with a reason",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "On another claimed paper, press Unextractable… with a reason."
+    ],
+    "expected": "Status Unextractable, reason shown, read-only."
+   },
+   {
+    "id": "CU-15",
+    "title": "Someone else's paper is read-only",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open a paper assigned to C2."
+    ],
+    "expected": "Banner \"Assigned to C2 — read only\". Nothing editable."
+   },
+   {
+    "id": "CU-16",
+    "title": "History",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open History on a paper you've worked on."
+    ],
+    "expected": "Claim, submit or exclude events with names, times and reasons."
+   },
+   {
+    "id": "CU-17",
+    "title": "View settings are personal",
+    "roles": [
+     "C1",
+     "C2"
+    ],
+    "steps": [
+     "C1 opens paper A and zooms; C2 opens paper B in the same project.",
+     "Both reload."
+    ],
+    "expected": "Each gets back their own paper and zoom; neither moves the other's view."
+   },
+   {
+    "id": "CU-18",
+    "title": "Export is refused",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open /api/projects/<pid>/export?format=csv directly."
+    ],
+    "expected": "A 403 error, no file."
+   },
+   {
+    "id": "CU-19",
+    "title": "Admin page is refused",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "Open /admin."
+    ],
+    "expected": "Refused (403), no admin data."
+   },
+   {
+    "id": "CU-20",
+    "title": "Joining through an invite link",
+    "roles": [
+     "C1"
+    ],
+    "steps": [
+     "While signed in, open an invite link for another project."
+    ],
+    "expected": "\"Join … as a curator?\", then lands inside that project as a curator."
+   },
+   {
+    "id": "CU-21",
+    "title": "Outsider can't see a project",
+    "roles": [
+     "O"
+    ],
+    "steps": [
+     "Open /p/<pid> of a project you're not on."
+    ],
+    "expected": "The app treats it as not found and goes back home with a message."
+   }
+  ]
+ },
+ {
+  "group": "manager",
+  "title": "Project manager",
+  "cases": [
+   {
+    "id": "PM-01",
+    "title": "Home card for a manager",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Open home."
+    ],
+    "expected": "Manager badge; ⋮ menu offers the config and export downloads, but no Archive."
+   },
+   {
+    "id": "PM-02",
+    "title": "Create a project",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "New project → fill in details, features, review → create."
+    ],
+    "expected": "You land in it as its manager; it appears on home."
+   },
+   {
+    "id": "PM-03",
+    "title": "Edit the schema",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Change a feature description, add a field, break a rule (e.g. empty name)."
+    ],
+    "expected": "Validation error for the broken rule; prompt preview updates; save works."
+   },
+   {
+    "id": "PM-04",
+    "title": "Import one PMID",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Add Paper(s) → one PMID with a free PDF."
+    ],
+    "expected": "A row goes waiting → running → added, and the paper appears in Pool."
+   },
+   {
+    "id": "PM-05",
+    "title": "Import a mixed batch",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Paste: a good PMID twice, one already in the project, a paywalled one, 99999999."
+    ],
+    "expected": "One row per distinct PMID: added, already in project, no open-access PDF, not found. Duplicates in the list collapse into one row."
+   },
+   {
+    "id": "PM-06",
+    "title": "Upload the PDF for a no-PDF row",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "On the \"no open-access PDF\" row, press Upload PDF for this PMID and pick the PDF."
+    ],
+    "expected": "The paper is added with that PMID already filled in."
+   },
+   {
+    "id": "PM-07",
+    "title": "Import keeps going without the tab",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Start a batch of ~10 PMIDs and close the modal right away.",
+     "Open Jobs."
+    ],
+    "expected": "The job keeps running; papers keep appearing; Jobs shows its progress."
+   },
+   {
+    "id": "PM-08",
+    "title": "Retry failed import items",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "On a finished job with failures, press Retry failed."
+    ],
+    "expected": "A new job containing only the failed PMIDs."
+   },
+   {
+    "id": "PM-09",
+    "title": "Cancel a running import",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Start a large batch and press Cancel."
+    ],
+    "expected": "Items already running finish; the rest become cancelled; the job ends as cancelled."
+   },
+   {
+    "id": "PM-10",
+    "title": "Upload PDFs directly",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Upload one PDF, then several, then the same PDF again under another file name."
+    ],
+    "expected": "Each added once; the repeat is reported as already in the project. Uploaded papers ask for their PMID."
+   },
+   {
+    "id": "PM-11",
+    "title": "Confirm identity on any paper",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Confirm a PMID (or mark \"no PMID\" if the project allows it) on a paper assigned to a curator."
+    ],
+    "expected": "Allowed for a manager."
+   },
+   {
+    "id": "PM-12",
+    "title": "Declare variants on any paper",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Edit a paper's variant list while it's assigned to C1."
+    ],
+    "expected": "Allowed for a manager; C1 sees the new rows."
+   },
+   {
+    "id": "PM-13",
+    "title": "Extract one paper",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Run extraction… on the open paper with one model."
+    ],
+    "expected": "Progress shown; when done, the run appears with AI values and evidence."
+   },
+   {
+    "id": "PM-14",
+    "title": "Extraction without variants listed",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Run extraction on a paper whose variant list is empty (project with a repeating group)."
+    ],
+    "expected": "That item fails with a clear message to add the entries first."
+   },
+   {
+    "id": "PM-15",
+    "title": "Bulk extraction",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Run extraction… → every paper lacking a run for the chosen models."
+    ],
+    "expected": "The count shown matches; one job with a row per paper; runs appear as items finish."
+   },
+   {
+    "id": "PM-16",
+    "title": "Re-running with force",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Re-run extraction with force on a paper a curator has edited."
+    ],
+    "expected": "Note what happens to the curator's edits (expected: replaced by the new run — decide if that needs a warning)."
+   },
+   {
+    "id": "PM-17",
+    "title": "Assign, reassign, return to pool",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Assign a Pool paper to C1, reassign it to C2, then choose Pool (unassigned)."
+    ],
+    "expected": "Status and assignee follow each change; History records each step."
+   },
+   {
+    "id": "PM-18",
+    "title": "Assign list shows only the team",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Open the Assign to list."
+    ],
+    "expected": "Only current, active project members, plus Pool."
+   },
+   {
+    "id": "PM-19",
+    "title": "Reopen a finished paper",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Reopen a submitted paper with a reason."
+    ],
+    "expected": "Back to In progress with the same curator; the reason is in History."
+   },
+   {
+    "id": "PM-20",
+    "title": "Managers can't edit around a curator",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Open a paper assigned to C1 and try to edit a value."
+    ],
+    "expected": "Read-only; reassigning is the only way."
+   },
+   {
+    "id": "PM-21",
+    "title": "Manager curates their own paper",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Assign a paper to yourself and curate it."
+    ],
+    "expected": "Editable; attribution shows your name."
+   },
+   {
+    "id": "PM-22",
+    "title": "Add a curator",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Team → Add person → pick someone from the directory."
+    ],
+    "expected": "They appear as curator. The manager role isn't offered to you."
+   },
+   {
+    "id": "PM-23",
+    "title": "Remove a curator who has work",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Remove a curator who has in-progress papers."
+    ],
+    "expected": "They leave the team; their in-progress papers go back to Pool; submitted ones keep their name."
+   },
+   {
+    "id": "PM-24",
+    "title": "Managers can't remove managers",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Look for a Remove button on another manager."
+    ],
+    "expected": "Not offered (only a superadmin can)."
+   },
+   {
+    "id": "PM-25",
+    "title": "Create an invite link",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Team → Create link (7 days, max 2 uses) → Copy."
+    ],
+    "expected": "The full URL is shown once with Copy; the list shows it as valid with 0/2 uses."
+   },
+   {
+    "id": "PM-26",
+    "title": "Revoke an invite link",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Revoke the link."
+    ],
+    "expected": "State revoked; opening it says it's no longer valid."
+   },
+   {
+    "id": "PM-27",
+    "title": "Export",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Download CSV and audit JSON."
+    ],
+    "expected": "CSV opens in a spreadsheet; JSON includes users, events (claim/assign/submit…) and edited/confirmed-by ids."
+   },
+   {
+    "id": "PM-28",
+    "title": "Config file round trip",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Download the config file, create a new project from it."
+    ],
+    "expected": "Same features, models and prompts in the new project."
+   },
+   {
+    "id": "PM-29",
+    "title": "Jobs panel",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Open Jobs during and after a run; view items; cancel; retry."
+    ],
+    "expected": "Kind, state, counts, time and who started it; actions only where they apply."
+   }
+  ]
+ },
+ {
+  "group": "superadmin",
+  "title": "Superadmin",
+  "cases": [
+   {
+    "id": "SA-01",
+    "title": "First start creates the superadmin",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Start the server with the env admin set (password ≥ 10 characters).",
+     "Sign in."
+    ],
+    "expected": "Startup log says the superadmin was set up; sign-in forces a password change."
+   },
+   {
+    "id": "SA-02",
+    "title": "Approve and reject sign-ups",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Admin → Pending: approve one request as user, another as manager, reject a third."
+    ],
+    "expected": "The Pending badge counts down. Approved people can sign in; the rejected one is told the request wasn't approved."
+   },
+   {
+    "id": "SA-03",
+    "title": "Create a user",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Users → Create user."
+    ],
+    "expected": "A dialog shows a temporary password once, with Copy and a \"won't be shown again\" warning."
+   },
+   {
+    "id": "SA-04",
+    "title": "Reset a password",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Reset a signed-in user's password."
+    ],
+    "expected": "New temporary password shown once; that user is signed out at their next click."
+   },
+   {
+    "id": "SA-05",
+    "title": "Deactivate and reactivate",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Deactivate an active user, then reactivate them."
+    ],
+    "expected": "They're signed out at once and can't sign in; after reactivation they can. Their past edits still show their name."
+   },
+   {
+    "id": "SA-06",
+    "title": "Change account roles",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Make a user a manager; make a manager a user."
+    ],
+    "expected": "The new manager can create projects (after reload); the demoted one can't."
+   },
+   {
+    "id": "SA-07",
+    "title": "Guard rails",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Try to deactivate yourself.",
+     "Try to demote the only superadmin."
+    ],
+    "expected": "Both refused with a clear message."
+   },
+   {
+    "id": "SA-08",
+    "title": "All projects, including archived",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Admin → Projects."
+    ],
+    "expected": "Every project, with managers, paper and finished counts, members, archived state."
+   },
+   {
+    "id": "SA-09",
+    "title": "Archive and unarchive",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Archive a project (Admin or home ⋮ menu), then unarchive it."
+    ],
+    "expected": "Archived: gone from members' home and unreachable; Open disabled in Admin. Unarchived: back for everyone."
+   },
+   {
+    "id": "SA-10",
+    "title": "Add and remove project managers",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Add a second manager to a project; remove one; try to remove the last one."
+    ],
+    "expected": "First two work; the last-manager removal is refused."
+   },
+   {
+    "id": "SA-11",
+    "title": "Open any project",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Open a project you're not a member of."
+    ],
+    "expected": "Full manager view of it."
+   },
+   {
+    "id": "SA-12",
+    "title": "System tab",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Admin → System."
+    ],
+    "expected": "Version, database size, extraction on/off, backups, job counts, user counts, recent errors (or \"No errors since the server started\")."
+   },
+   {
+    "id": "SA-13",
+    "title": "Back up and download",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Back up now; then Download database snapshot."
+    ],
+    "expected": "A new backup appears in the list with the current time; the snapshot downloads as a .db file. Repeated downloads don't add to the backup list."
+   }
+  ]
+ },
+ {
+  "group": "cross",
+  "title": "Flows across roles",
+  "cases": [
+   {
+    "id": "XR-01",
+    "title": "A paper's whole life",
+    "roles": [
+     "Anon",
+     "SA",
+     "PM",
+     "C1"
+    ],
+    "steps": [
+     "Anon: request an account.",
+     "SA: approve it.",
+     "PM: add the person to the project, import a paper, extract it, assign it to them.",
+     "C1: curate, confirm, submit.",
+     "PM: reopen with a reason.",
+     "C1: fix and submit again.",
+     "PM: export the audit JSON."
+    ],
+    "expected": "Every step works; the export shows who edited and confirmed each value, and every claim/assign/submit/reopen with times."
+   },
+   {
+    "id": "XR-02",
+    "title": "New person through an invite link",
+    "roles": [
+     "PM",
+     "Anon",
+     "SA"
+    ],
+    "steps": [
+     "PM: create an invite link.",
+     "Anon: open it and request an account through it.",
+     "SA: approve.",
+     "New person: sign in."
+    ],
+    "expected": "Approval says they were added to the project; after sign-in they're in it as a curator."
+   },
+   {
+    "id": "XR-03",
+    "title": "Existing user, signed out, opens a link",
+    "roles": [
+     "PM",
+     "C2"
+    ],
+    "steps": [
+     "PM: create a link.",
+     "C2 (signed out): open it and sign in."
+    ],
+    "expected": "After sign-in they join and land in the project."
+   },
+   {
+    "id": "XR-04",
+    "title": "Two curators claim at once",
+    "roles": [
+     "C1",
+     "C2"
+    ],
+    "steps": [
+     "Both open the same Pool paper.",
+     "Both press Claim at nearly the same moment."
+    ],
+    "expected": "One gets it; the other is told it's already taken by the winner, and sees it read-only."
+   },
+   {
+    "id": "XR-05",
+    "title": "Reassigned while editing",
+    "roles": [
+     "C1",
+     "PM",
+     "C2"
+    ],
+    "steps": [
+     "C1: start editing a paper.",
+     "PM: reassign it to C2.",
+     "C1: edit again.",
+     "C2: open it."
+    ],
+    "expected": "C1's next save is refused with a message and the paper turns read-only. C2 can edit."
+   },
+   {
+    "id": "XR-06",
+    "title": "Removed while working",
+    "roles": [
+     "C1",
+     "PM"
+    ],
+    "steps": [
+     "C1: working in the project.",
+     "PM: remove C1 from the team.",
+     "C1: click anything."
+    ],
+    "expected": "C1 loses the project and is sent home; C1's in-progress papers are back in Pool."
+   },
+   {
+    "id": "XR-07",
+    "title": "Deactivated while working",
+    "roles": [
+     "C1",
+     "SA"
+    ],
+    "steps": [
+     "C1: working.",
+     "SA: deactivate C1.",
+     "C1: click anything."
+    ],
+    "expected": "C1 is sent to the sign-in page and can't sign back in."
+   },
+   {
+    "id": "XR-08",
+    "title": "Password reset while signed in",
+    "roles": [
+     "C1",
+     "SA"
+    ],
+    "steps": [
+     "C1: signed in.",
+     "SA: reset C1's password and hand over the temporary one.",
+     "C1: click anything, then sign in with the temporary password."
+    ],
+    "expected": "Signed out, then forced to choose a new password."
+   },
+   {
+    "id": "XR-09",
+    "title": "Two curators, one project, half an hour",
+    "roles": [
+     "C1",
+     "C2"
+    ],
+    "steps": [
+     "Both curate different papers in the same project for 30 minutes, reloading now and then."
+    ],
+    "expected": "No lost or crossed edits; each value names the right person."
+   },
+   {
+    "id": "XR-10",
+    "title": "Reopened while the curator watches",
+    "roles": [
+     "PM",
+     "C1"
+    ],
+    "steps": [
+     "C1: viewing their submitted paper.",
+     "PM: reopen it.",
+     "C1: reload."
+    ],
+    "expected": "Editable again for C1."
+   },
+   {
+    "id": "XR-11",
+    "title": "Extraction while a curator is on the paper",
+    "roles": [
+     "PM",
+     "C1"
+    ],
+    "steps": [
+     "C1: curating a paper with one model's run.",
+     "PM: extract it with a second model (no force).",
+     "C1: reload."
+    ],
+    "expected": "The new model's run appears; C1's edits on the first run are untouched."
+   },
+   {
+    "id": "XR-12",
+    "title": "Promotion takes effect",
+    "roles": [
+     "SA",
+     "C1"
+    ],
+    "steps": [
+     "SA: make C1 a manager account.",
+     "C1: reload home."
+    ],
+    "expected": "C1 now has New project."
+   },
+   {
+    "id": "XR-13",
+    "title": "Promoted to project manager",
+    "roles": [
+     "SA",
+     "C1"
+    ],
+    "steps": [
+     "SA: add C1 as a manager of the project (Admin → Projects).",
+     "C1: reload the project."
+    ],
+    "expected": "C1 now sees Add Paper(s), Jobs, Team and the assign controls."
+   },
+   {
+    "id": "XR-14",
+    "title": "Archived under people's feet",
+    "roles": [
+     "SA",
+     "C1"
+    ],
+    "steps": [
+     "C1: in the project.",
+     "SA: archive it.",
+     "C1: click anything.",
+     "SA: unarchive."
+    ],
+    "expected": "C1 loses access, then gets it back with nothing lost."
+   },
+   {
+    "id": "XR-15",
+    "title": "Name survives deactivation",
+    "roles": [
+     "C1",
+     "SA",
+     "PM"
+    ],
+    "steps": [
+     "C1: confirm some values.",
+     "SA: deactivate C1.",
+     "PM: open those values and export."
+    ],
+    "expected": "Still \"confirmed by C1\" in the app and in the export."
+   },
+   {
+    "id": "XR-16",
+    "title": "Single-use invite link",
+    "roles": [
+     "PM",
+     "C2",
+     "O"
+    ],
+    "steps": [
+     "PM: create a link with max uses 1.",
+     "C2: join with it.",
+     "O: try the same link."
+    ],
+    "expected": "C2 joins; O is told the link is no longer valid."
+   },
+   {
+    "id": "XR-17",
+    "title": "Two projects, two tabs",
+    "roles": [
+     "PM"
+    ],
+    "steps": [
+     "Open project A and project B in two tabs; work in both."
+    ],
+    "expected": "No crossover of papers, view or saves between the tabs."
+   }
+  ]
+ },
+ {
+  "group": "deploy",
+  "title": "Server and deployment",
+  "cases": [
+   {
+    "id": "DE-01",
+    "title": "HTTPS and redirect",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Open http://<host>/ and https://<host>/."
+    ],
+    "expected": "HTTP redirects to HTTPS; the certificate is valid."
+   },
+   {
+    "id": "DE-02",
+    "title": "Session cookie is Secure",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Sign in; browser dev tools → Application → Cookies."
+    ],
+    "expected": "annotaid_session is HttpOnly, Secure, SameSite=Lax."
+   },
+   {
+    "id": "DE-03",
+    "title": "Forms work through nginx",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Sign in, save a value, upload a PDF of ~20 MB."
+    ],
+    "expected": "No \"did not come from this site\" errors; the upload succeeds."
+   },
+   {
+    "id": "DE-04",
+    "title": "Restart mid-job",
+    "roles": [
+     "SA",
+     "PM"
+    ],
+    "steps": [
+     "PM: start an import of ~10 PMIDs.",
+     "Sysadmin: systemctl restart annotaid.",
+     "PM: open Jobs."
+    ],
+    "expected": "Interrupted items say so; the rest finish; Retry failed re-runs only those."
+   },
+   {
+    "id": "DE-05",
+    "title": "Restore from a backup",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Back up now; sysadmin follows RUNBOOK section 4 on a copy."
+    ],
+    "expected": "Projects, papers, values and accounts all present after restore."
+   },
+   {
+    "id": "DE-06",
+    "title": "Upgrade and rollback",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Sysadmin deploys a new release tarball, then points the symlink back."
+    ],
+    "expected": "Both start cleanly; the version on Admin → System changes accordingly."
+   },
+   {
+    "id": "DE-07",
+    "title": "Moving to the production domain",
+    "roles": [
+     "SA"
+    ],
+    "steps": [
+     "Put the app on annotaid.afrigen-d.org with its own certificate."
+    ],
+    "expected": "Works with no code change; each domain has its own sign-ins; invite links show the domain they were made on."
+   }
+  ]
+ }
+]

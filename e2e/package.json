@@ -1,0 +1,13 @@
+{
+  "name": "annotaid-e2e",
+  "private": true,
+  "description": "Browser tests for AnnotAid v2. Separate from the app: the server itself stays stdlib-only.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}
