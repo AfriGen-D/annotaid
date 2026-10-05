@@ -1,0 +1,41 @@
+# systemd unit for AnnotAid. Install as /etc/systemd/system/annotaid.service
+#
+# Exactly ONE instance per data directory: the lock that stops two people's
+# saves from overwriting each other only works inside a single process. Do not
+# scale this out with a second unit, a template unit or a process manager.
+[Unit]
+Description=AnnotAid (AI-assisted biocuration)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=annotaid
+Group=annotaid
+# /opt/annotaid is a symlink to the current release (see RUNBOOK.md). The
+# directory MUST be named "annotaid": the code imports itself as a package.
+WorkingDirectory=/opt/annotaid
+ExecStart=/opt/annotaid-venv/bin/python /opt/annotaid/run.py \
+    --host 127.0.0.1 --port 8765 \
+    --data-dir /var/lib/annotaid \
+    --keys /etc/annotaid/env
+Restart=on-failure
+RestartSec=5
+# Let the job runner finish writing the item it is on.
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening: the app only needs to write its data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/annotaid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
