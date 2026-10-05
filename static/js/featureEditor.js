@@ -4,6 +4,7 @@
 // Editor widgets adapted from visual_evaluator.html (listEditor / bool-toggle / setWas).
 import { el, escapeHtml } from "./dom.js";
 import { helpIcon } from "./tooltip.js";
+import { shortTime } from "./dialog.js";
 
 /* ---------- value helpers ---------- */
 function normList(arr) {
@@ -24,6 +25,31 @@ function renderValue(v, type) {
   return (v == null || v === "") ? "—" : String(v);
 }
 function cleanList(arr) { return (arr || []).map(s => String(s).trim()).filter(Boolean); }
+
+// Read-only papers (not mine, or not in progress): every control that could
+// change a curated value is disabled. The "?" help and the evidence quote stay
+// live — reading a paper is still allowed.
+export function lockControls(root) {
+  root.querySelectorAll("input, select, textarea, button").forEach(c => {
+    if (c.classList.contains("help-icon")) return;
+    c.disabled = true;
+  });
+  root.classList.add("readonly");
+}
+
+/** "edited by Cora · 13:50  ·  confirmed by Cora · 14:02", or null. Also used by groupEditor. */
+export function attribution(cell, users) {
+  if (!cell) return null;
+  const name = id => (users && users[id]) || "someone";
+  const bits = [];
+  if (cell.editedBy) {
+    bits.push(`edited by ${name(cell.editedBy)}` + (cell.editedAt ? ` · ${shortTime(cell.editedAt)}` : ""));
+  }
+  if (cell.confirmed && cell.confirmedBy) {
+    bits.push(`confirmed by ${name(cell.confirmedBy)}` + (cell.confirmedAt ? ` · ${shortTime(cell.confirmedAt)}` : ""));
+  }
+  return bits.length ? el("div", "who-line", bits.join("  ·  ")) : null;
+}
 
 /* ---------- main render ---------- */
 export function renderFeature(fdef, feat, ctx) {
@@ -84,7 +110,12 @@ export function renderFeature(fdef, feat, ctx) {
   status.appendChild(conf);
   group.appendChild(status);
 
+  // Who last touched it (M8) — as the server recorded it at load time.
+  const who = attribution(feat, ctx.users);
+  if (who) group.appendChild(who);
+
   refreshAudit();
+  if (ctx.readOnly) lockControls(group);
   return group;
 }
 

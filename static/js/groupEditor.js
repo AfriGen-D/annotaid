@@ -10,7 +10,7 @@
 // restored. A row the curator added themselves has no such history and simply
 // goes away.
 import { el } from "./dom.js";
-import { renderFeature } from "./featureEditor.js";
+import { renderFeature, lockControls, attribution } from "./featureEditor.js";
 
 // A row's name is the curator's own declared identity for it (main.js passes
 // ctx.groupItemLabels, built from the paper's groupItems — server/project_
@@ -38,7 +38,8 @@ function rowProgress(row) {
 /**
  * gdef   the group definition from the project config
  * gnode  { present, aiPresent, confirmed, rows: [...] } — mutated in place
- * ctx    { openRowId, onOpenRow, onEdit, onStructureChange, onActivateEvidence }
+ * ctx    { openRowId, onOpenRow, onEdit, onStructureChange, onActivateEvidence,
+ *          readOnly, users (id -> name, for "confirmed by …") }
  */
 export function renderGroup(gdef, gnode, ctx) {
   const wrap = el("div", "grp");
@@ -155,7 +156,13 @@ export function renderGroup(gdef, gnode, ctx) {
   foot.appendChild(el("span", "spacer"));
   foot.appendChild(conf);
   wrap.appendChild(foot);
+  // "list is complete" carries its own attribution (M8).
+  const who = gnode.confirmed ? attribution(gnode, ctx.users) : null;
+  if (who) { who.classList.add("grp-who"); wrap.appendChild(who); }
 
+  // Read only: entries still open and close (row heads are not controls), but
+  // nothing can be added, rejected, restored, edited or confirmed.
+  if (ctx.readOnly) lockControls(wrap);
   return wrap;
 }
 
@@ -200,6 +207,8 @@ function rowCard(gdef, gnode, row, ctx) {
       if (!cell) continue;
       body.appendChild(renderFeature(fdef, cell, {
         partial: false,
+        readOnly: !!ctx.readOnly,
+        users: ctx.users,
         onEdit: () => {
           // Refresh just this row's header rather than redrawing the group: a
           // redraw mid-edit would collapse the entry and take the caret with it.

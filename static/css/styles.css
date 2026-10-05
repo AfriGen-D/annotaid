@@ -777,3 +777,140 @@ main.home{display:block;flex:1;min-height:0;overflow:auto;padding:34px 24px 60px
 .fe-sheet-bar a.btn{text-decoration:none}
 .fe-sheet-hint{flex-basis:100%;font-size:11.5px;color:var(--ink-soft);line-height:1.5}
 .fe-sheet-err{flex-basis:100%;margin:0}
+
+/* =========================================================================
+   v2: signed-in, multi-user curation — user menu, work queue, workflow bar,
+   read-only papers, attribution, jobs and team panels.
+   ========================================================================= */
+/* the app header now carries more controls; wrap rather than overflow
+   (scoped: home.html shares this stylesheet and has its own header) */
+body:not(.home-body) > header{flex-wrap:wrap;row-gap:8px}
+header a.btn{text-decoration:none}
+.user-menu{display:inline-flex;align-items:center;gap:8px}
+header .user-menu .who{color:#EAF3E5;font-size:12.5px;font-weight:500;max-width:180px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---- status badges (paper list + workflow bar) ---- */
+.st-badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;
+  padding:1px 6px;border-radius:4px;flex:none;white-space:nowrap}
+.st-badge.st-unassigned{color:var(--ink-soft);background:var(--surface-2);border:1px dashed var(--line)}
+.st-badge.st-in_progress{color:var(--gold);background:var(--gold-soft)}
+.st-badge.st-submitted{color:var(--ok);background:var(--ok-bg)}
+.st-badge.st-excluded,.st-badge.st-unextractable{color:var(--absent);background:var(--absent-bg)}
+
+/* ---- work queue (left pane) ---- */
+.doc-filter{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line-soft);flex:0 0 auto}
+.doc-filter label{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);font-weight:600}
+.doc-filter select{flex:1;min-width:0;border:1px solid var(--line);border-radius:7px;padding:4px 7px;
+  font-family:var(--sans);font-size:12px;color:var(--ink);background:var(--surface)}
+.doc-sec{margin-bottom:10px}
+.doc-sec-head{display:flex;justify-content:space-between;align-items:center;padding:6px 6px 4px;
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;font-weight:600;color:var(--ink-faint)}
+.doc-sec-n{font-family:var(--mono);font-weight:500}
+summary.doc-sec-head{cursor:pointer;list-style:none;border-radius:6px}
+summary.doc-sec-head::-webkit-details-marker{display:none}
+summary.doc-sec-head::before{content:"▸";margin-right:6px}
+details[open] > summary.doc-sec-head::before{content:"▾"}
+summary.doc-sec-head:hover{color:var(--ink);background:var(--surface)}
+summary.doc-sec-head span:first-child{margin-right:auto}
+.doc-sec-empty,.doc-empty{font-size:11.5px;color:var(--ink-faint);padding:4px 8px 6px;line-height:1.45}
+.doc-empty{padding:14px 8px;text-align:center}
+.doc .meta.wf{gap:6px}
+.doc-who{font-size:10.5px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---- workflow bar above the PDF ---- */
+/* relative + z-index: the viewer placeholder is absolutely positioned under the
+   toolbar and would otherwise sit on top of (and swallow clicks on) both */
+.paper-bar{flex:0 0 auto;position:relative;z-index:3;background:var(--surface);
+  border-bottom:1px solid var(--line)}
+.paper-bar[hidden]{display:none}
+.viewer-toolbar{position:relative;z-index:3}
+.pb-row{display:flex;align-items:center;gap:10px;padding:8px 14px;flex-wrap:wrap}
+.pb-row .spacer{flex:1}
+.pb-who{font-size:12.5px;color:var(--ink-soft)}
+.pb-when{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)}
+.pb-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.btn.pb-btn{padding:5px 11px;font-size:12px}
+.pb-assign{display:inline-flex;align-items:center;gap:6px}
+.pb-assign-lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);font-weight:600}
+.pb-select{border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-family:var(--sans);
+  font-size:12px;color:var(--ink);background:var(--surface-2);max-width:220px}
+.pb-select:disabled{opacity:.5}
+.pb-hist{margin-left:4px}
+.pb-reason{padding:0 14px 8px;font-size:12px;color:var(--ink-soft);line-height:1.45;white-space:pre-wrap}
+.pb-reason-lab{font-weight:600;color:var(--ink-faint)}
+/* why the open paper can't be edited — impossible to miss, not alarming */
+.ro-banner{padding:7px 14px;font-size:12.5px;font-weight:500;color:var(--ink);
+  background:var(--absent-bg);border-top:1px solid var(--line-soft);box-shadow:inset 3px 0 0 var(--ink-faint)}
+
+/* ---- read-only editors ---- */
+.readonly .confirm,.readonly .bool-toggle button,.readonly .val-rm,.readonly .add-val{cursor:not-allowed}
+.readonly .bool-toggle button:not(.on){opacity:.6}
+.readonly .add-val,.readonly .val-rm,.readonly .grp-add,.readonly .fe-del,.readonly .grp-undo,.readonly .gi-add{opacity:.4}
+.readonly input:disabled,.readonly select:disabled,.readonly textarea:disabled{color:var(--ink);opacity:.85;cursor:not-allowed}
+.no-runs .no-runs-btn{margin-top:10px}
+
+/* ---- attribution: who edited / confirmed (quiet) ---- */
+.who-line{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-top:5px;letter-spacing:.01em}
+.who-line.grp-who{padding:0 12px 8px;margin-top:0}
+.feat-group.card .who-line{font-size:11px}
+
+/* ---- dialogs (history, reason, jobs, team) ---- */
+.dlg-overlay{z-index:85}
+.modal.dlg-wide{max-width:680px}
+.dlg-text{font-size:12.5px;color:var(--ink-soft);line-height:1.5;margin-bottom:10px}
+.dlg-muted{font-size:12px;color:var(--ink-faint);line-height:1.5;padding:4px 0}
+.dlg-err{margin:8px 0;padding:8px 11px;border-radius:7px;background:var(--bad-bg);color:var(--bad);font-size:12px;line-height:1.45}
+.dlg-err[hidden]{display:none}
+.dlg-reason{width:100%;resize:vertical;border:1px solid var(--line);border-radius:7px;padding:8px 10px;
+  font-family:var(--sans);font-size:13px;background:var(--surface-2);color:var(--ink)}
+.dlg-reason:focus{outline:none;border-color:var(--gold);background:#fff;box-shadow:0 0 0 3px var(--gold-soft)}
+
+.hist-list{display:flex;flex-direction:column;border:1px solid var(--line-soft);border-radius:8px;max-height:56vh;overflow:auto}
+.hist-row{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;padding:8px 11px;border-bottom:1px solid var(--line-soft);font-size:12.5px}
+.hist-row:last-child{border-bottom:none}
+.hist-when{font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+.hist-what b{font-weight:600}
+.hist-reason{grid-column:2;font-size:12px;color:var(--ink-soft);font-style:italic;white-space:pre-wrap}
+
+/* ---- jobs panel ---- */
+.jobs-list{display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow:auto}
+.job{border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px}
+.job-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:12px}
+.job-row .spacer{flex:1}
+.job-kind{font-weight:600;color:var(--ink)}
+.job-counts{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.job-when{font-size:11px;color:var(--ink-faint)}
+.btn.job-btn{padding:4px 10px;font-size:11.5px}
+.job-err{margin-top:6px;font-size:11.5px;color:var(--bad)}
+.job-note{margin-top:4px;font-size:10.5px;color:var(--ink-faint)}
+.job-items{max-height:30vh}
+
+/* ---- team panel ---- */
+.team-sec{margin-bottom:18px}
+.team-sec .modal-lab{margin-bottom:6px}
+.team-list{display:flex;flex-direction:column;border:1px solid var(--line-soft);border-radius:8px;margin-top:8px}
+.team-list .dlg-muted{padding:8px 11px}
+.team-row{display:flex;align-items:center;gap:9px;padding:7px 11px;border-bottom:1px solid var(--line-soft);font-size:12.5px;flex-wrap:wrap}
+.team-row:last-child{border-bottom:none}
+.team-row .spacer{flex:1}
+.team-name{font-weight:500;color:var(--ink)}
+.team-email{font-size:11.5px;color:var(--ink-faint)}
+.team-role{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;padding:1px 6px;border-radius:4px;
+  color:var(--ink-soft);background:var(--surface-2)}
+.team-role.manager{color:var(--gold);background:var(--gold-soft)}
+.team-inactive{font-size:10.5px;color:var(--bad)}
+.team-count{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.team-add{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;margin-top:8px}
+.team-who{flex:1;min-width:200px;max-width:none}
+.team-field{display:flex;flex-direction:column;gap:3px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint)}
+.team-num{width:120px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)}
+.link-fresh{margin-top:10px;padding:10px 11px;border:1px solid var(--gold-line);border-radius:8px;background:var(--gold-soft)}
+.link-fresh[hidden]{display:none}
+.link-fresh-row{display:flex;gap:8px}
+.link-url{flex:1;min-width:0;border:1px solid var(--gold-line);border-radius:7px;padding:7px 9px;font-family:var(--mono);font-size:11.5px;background:#fff;color:var(--ink)}
+.link-fresh-note{margin-top:6px;font-size:11.5px;font-weight:600;color:var(--gold)}
+
+/* ---- bulk extraction scope ---- */
+.ex-scope{display:flex;flex-direction:column;gap:5px;margin:4px 0 10px;padding:8px 10px;border:1px solid var(--line-soft);border-radius:8px}
+.ex-scope label{display:flex;align-items:center;gap:8px;font-size:12.5px}

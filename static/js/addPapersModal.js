@@ -11,14 +11,23 @@
 // The PMID path never fails silently: every id gets its own row with its own
 // verdict, because most subscription-only papers aren't retrievable and the
 // curator needs to know *which* ones to go and fetch by hand.
+//
+// Fetching and extraction are server-side background jobs (jobs.js): the
+// modal starts ONE job for the whole list and renders its items as it polls.
+// Closing the modal stops nothing — main.js follows every job it starts and
+// folds the results in, and the Jobs panel shows where it got to.
+//
+// The same modal, opened with `bulk`, is just the extraction step: run the
+// chosen models over the open paper or every paper still lacking a run.
 import { el } from "./dom.js";
 import { parsePmidText, describeParse } from "./pmidText.js";
 import { parsePmidVariantText, describeVariantParse } from "./variantPmidText.js";
 import { renderGroupItemsList } from "./groupItemsList.js";
+import { followJob, isActive, importItemView, extractItemView, jobProgress } from "./jobs.js";
 
 const ROOT_ID = "addPdfModal";
 const SOFT_CAP = 100;      // warn above this, never block
-const CONFIRM_CAP = 1000;  // one confirm() above this, still never blocks
+const MAX_JOB = 500;       // the server's per-job item limit (server/jobs.py MAX_ITEMS)
 const MAX_ROWS = 500;      // rows rendered up front; the rest appear if they need attention
 
 // .txt/.csv/.tsv, plus extensionless files — plain ID lists are routinely saved
@@ -37,55 +46,49 @@ const STEP_LABEL = {
   extract: "AI extraction",
 };
 
-const LABEL = {
-  pending: "queued", running: "", ok: "added",
-  dup: "in library", failed: "failed", uploaded: "uploaded",
-};
-
-// N workers draining a shared cursor. `worker` must never reject — it records
-// every outcome as a row state — so there is nothing to settle.
-async function pool(items, limit, worker) {
-  let cursor = 0;
-  const n = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: n }, async () => {
-    while (cursor < items.length) await worker(items[cursor++]);
-  }));
-}
-
 function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 
 /**
- * onFetchOne(pmid, {signal}) -> Promise<paper>    (rejects with .message / .status)
- * onBatchDone({added, duplicate, failed, cancelled}) -> void
+ * onStartImport(pmids) -> Promise<job>     creates ONE import job (main.js also follows it)
+ * onRetryJob(jid) -> Promise<job>          a new job of only the failed items
+ * onCancelJob(jid) -> Promise<job>
+ * resolvePaper(uid) -> Promise<paper|null> a paper a job added, once main.js has it
  * onUpload(files, {pmid}) -> Promise<paper[]>
  * onConfirmPmid(uid, pmid) -> Promise<paper>
  * onNoPmid(uid, doi) -> Promise<paper>            doi may be ""
- * onExtract(paper, models, engine) -> Promise<runs>
+ * onStartExtract({uids, models, parseEngine}) -> Promise<job>   one extract job
  * onSaveGroupItems(uid, items) -> Promise<items>  the curator's declared row
  *   identity for the project's one repeating group — see server/extraction.py.
  *   Only called if the project's config actually has a group.
- * onFinish() -> void            called once when the stepper closes
+ * onFinish(papers) -> void      called once when the stepper closes
  * findByPmid(pmid) -> paper|null
- * config, concurrency
+ * config
+ * canExtract                    false: the extraction step explains why instead
+ * bulk  (optional) {papers() -> paper[], hasRun(uid, model) -> bool, currentUid}
+ *   opens straight on the extraction step for papers already in the project.
  */
 export function openAddPapersModal(opts) {
   const {
-    onFetchOne, onBatchDone, onUpload, onConfirmPmid, onNoPmid, onExtract,
-    onSaveGroupItems, onFinish, findByPmid, config,
+    onStartImport, onRetryJob, onCancelJob, resolvePaper, onUpload, onConfirmPmid,
+    onNoPmid, onStartExtract, onSaveGroupItems, onFinish, findByPmid, config,
   } = opts;
-  const CONC = Math.max(1, opts.concurrency || 3);
+  const bulk = opts.bulk || null;
+  const canExtract = opts.canExtract !== false;
   const groupDef = (config.features || []).find(f => f.type === "group") || null;
 
   const st = {
-    path: null,        // null | "pdf" | "pmid"
+    path: bulk ? "extract" : null,   // null | "pdf" | "pmid" | "extract" (bulk)
     step: "source",
     rows: new Map(),   // pmid -> row record (fetch step)
     order: [],
-    batch: [], done: 0,
-    runAdded: [],
+    job: null,         // the import job the fetching step is showing
+    unfollow: null,    // stops THIS modal listening; never stops the job
+    localDone: 0,      // ids settled without the server (already in the project)
+    settledBefore: 0,  // ids an earlier job settled for good, before a retry
+    resolving: [],     // promises: papers the job added, being looked up
+    advanced: false,   // auto-moved on after a clean finish (only once per job)
     running: false,
     closed: false,
-    abort: null,
     papers: new Map(), // uid -> paper, everything this run produced
     uploadHint: null,  // pmid the manual-upload detour is for
     idsMode: "plain",  // "plain" | "variant" — which paste format the ids step is reading
@@ -105,7 +108,7 @@ export function openAddPapersModal(opts) {
   root.appendChild(modal);
 
   const head = el("div", "modal-head");
-  head.appendChild(el("span", null, "Add paper(s)"));
+  head.appendChild(el("span", null, bulk ? "Run AI extraction" : "Add paper(s)"));
   const closeBtn = el("button", "modal-close", "×");
   closeBtn.setAttribute("aria-label", "Close");
   head.appendChild(closeBtn);
@@ -116,9 +119,11 @@ export function openAddPapersModal(opts) {
   const stepRow = el("div", "stepper-steps");
   stepper.appendChild(stepRow);
   modal.appendChild(stepper);
+  stepper.hidden = !!bulk;          // a one-step chain is not a stepper
 
   function chain() {
     const variants = groupDef ? ["variants"] : [];
+    if (st.path === "extract") return ["extract"];
     if (st.path === "pdf") return ["source", "upload", ...variants, "extract"];
     if (st.path === "pmid") return ["source", "ids", "fetching", ...variants, "extract"];
     return ["source", "extract"];
@@ -155,10 +160,11 @@ export function openAddPapersModal(opts) {
   function close() {
     if (st.closed) return;
     st.closed = true;
-    // Stops further dispatches. In-flight requests are deliberately NOT waited
-    // on: the server has already done the work and stored the paper, so the
-    // batch reports `cancelled` and main.js resyncs from /api/state.
-    if (st.abort) st.abort.abort();
+    // Only this modal stops listening. The jobs it started keep running on the
+    // server, and main.js — which follows them too — still folds in the papers
+    // and runs they produce.
+    if (st.unfollow) st.unfollow();
+    if (exState.unfollow) exState.unfollow();
     root.hidden = true;
     root.innerHTML = "";
     document.removeEventListener("keydown", onKeydown);
@@ -316,16 +322,17 @@ export function openAddPapersModal(opts) {
     count.textContent = parsed.total
       ? (st.idsMode === "variant" ? describeVariantParse(parsed) : describeParse(parsed))
       : "";
-    fetchBtn.disabled = n === 0;
+    fetchBtn.disabled = n === 0 || n > MAX_JOB;
     fetchBtn.textContent = n === 0 ? "Fetch"
-      : `Fetch ${plural(n, "paper")}${n > SOFT_CAP ? " anyway" : ""}`;
+      : `Fetch ${plural(n, "paper")}${n > SOFT_CAP && n <= MAX_JOB ? " anyway" : ""}`;
 
-    if (n > SOFT_CAP) {
-      const waves = Math.ceil(n / CONC);
+    if (n > MAX_JOB) {
+      warn.textContent = `${n} PMIDs. One import can take at most ${MAX_JOB} — split the list and add it in parts.`;
+      warn.hidden = false;
+    } else if (n > SOFT_CAP) {
       warn.textContent =
-        `${n} PMIDs. At ${CONC} at a time this will take roughly ` +
-        `${Math.round(waves * 10 / 60)}–${Math.round(waves)} minutes. You can close this at any ` +
-        `point — fetching stops and everything already added is kept.`;
+        `${n} PMIDs. This runs on the server a few at a time and can take a while. ` +
+        `You can close this at any point — the import keeps going, and the Jobs panel shows where it got to.`;
       warn.hidden = false;
     } else warn.hidden = true;
   }
@@ -395,7 +402,8 @@ export function openAddPapersModal(opts) {
   moreNote.hidden = true;
 
   const fetchActions = el("div", "step-actions");
-  const stopBtn = el("button", "btn", "Stop");
+  const stopBtn = el("button", "btn", "Cancel import");
+  stopBtn.title = "Stop the server picking up more PMIDs (closing this window does NOT stop it)";
   const retryBtn = el("button", "btn", "Retry failed");
   const skipBtn = el("button", "btn primary", "Continue");
   // renderSummary owns these; start hidden so none flashes before the first run
@@ -461,7 +469,11 @@ export function openAddPapersModal(opts) {
     const pmid = st.uploadHint;
     const papers = await onUpload(files, { pmid });
     papers.forEach(p => { st.papers.set(p.uid, p); if (pmid) stashVariantIds(p.uid, pmid); });
-    if (pmid) setRow(pmid, "uploaded", "PDF uploaded — confirm the PMID in the next step");
+    if (pmid && papers.length) {
+      const r = st.rows.get(pmid);
+      if (r) r.uploaded = true;   // the job's verdict no longer applies to this row
+      setRow(pmid, { label: "uploaded", tone: "uploaded", msg: "PDF uploaded — confirm the PMID in the next step" });
+    }
     closeDetour();
     renderSummary();
   }
@@ -470,15 +482,15 @@ export function openAddPapersModal(opts) {
   function makeRow(pmid) {
     const node = el("div", "batch-row");
     node.appendChild(el("span", "bp-id", pmid));
-    const stateNode = el("span", "bp-state pending", LABEL.pending);
+    const stateNode = el("span", "bp-state pending", "waiting");
     node.appendChild(stateNode);
     const msgNode = el("span", "bp-msg");
     node.appendChild(msgNode);
-    const altNode = el("button", "bp-alt", "Upload PDF instead");
+    const altNode = el("button", "bp-alt", "Upload PDF for this PMID");
     altNode.hidden = true;
     altNode.onclick = () => openDetour(pmid);
     node.appendChild(altNode);
-    return { pmid, state: "pending", message: "", node, stateNode, msgNode, altNode };
+    return { pmid, tone: "pending", outcome: null, uploaded: false, node, stateNode, msgNode, altNode };
   }
 
   function buildRows(pmids) {
@@ -489,9 +501,9 @@ export function openAddPapersModal(opts) {
     pmids.forEach((pmid, i) => {
       const r = makeRow(pmid);
       st.rows.set(pmid, r);
-      // Above MAX_ROWS the node is held back: 10k rows is a lot of DOM for a
-      // list nobody reads when everything succeeds. Rows that end up needing
-      // attention are inserted on their state change.
+      // Above MAX_ROWS the node is held back: hundreds of rows is a lot of DOM
+      // for a list nobody reads when everything succeeds. Rows that end up
+      // needing attention are inserted on their state change.
       if (i < MAX_ROWS) frag.appendChild(r.node);
     });
     frag.appendChild(moreNote);
@@ -501,24 +513,29 @@ export function openAddPapersModal(opts) {
     moreNote.textContent = `+${hidden} more — rows appear here if they need your attention.`;
   }
 
-  function setRow(pmid, state, message) {
+  // view: {label, tone, msg} — see jobs.importItemView. `outcome` decides
+  // whether the row offers the manual-upload detour.
+  function setRow(pmid, view, outcome) {
     const r = st.rows.get(pmid);
     if (!r) return;
-    r.state = state;
-    r.message = message || "";
+    r.tone = view.tone;
+    r.outcome = outcome || null;
     if (st.closed) return;
-    if (!r.node.parentNode && state !== "pending" && state !== "ok") list.insertBefore(r.node, moreNote);
-    r.stateNode.className = "bp-state " + state;
+    if (!r.node.parentNode && view.tone !== "pending" && view.tone !== "ok") list.insertBefore(r.node, moreNote);
+    r.stateNode.className = "bp-state " + view.tone;
     r.stateNode.innerHTML = "";
-    if (state === "running") r.stateNode.appendChild(el("span", "spinner-ring"));
-    else r.stateNode.appendChild(document.createTextNode(LABEL[state]));
-    r.msgNode.textContent = r.message;
-    r.altNode.hidden = state !== "failed";
+    if (view.tone === "running") r.stateNode.appendChild(el("span", "spinner-ring"));
+    else r.stateNode.appendChild(document.createTextNode(view.label));
+    r.msgNode.textContent = view.msg || "";
+    r.altNode.hidden = r.uploaded || outcome !== "no_pdf";
   }
 
   function tally() {
-    const t = { ok: 0, dup: 0, failed: 0, uploaded: 0 };
-    for (const r of st.rows.values()) if (r.state in t) t[r.state]++;
+    const t = { ok: 0, dup: 0, failed: 0, uploaded: 0, waiting: 0 };
+    for (const r of st.rows.values()) {
+      if (r.tone === "pending" || r.tone === "running") t.waiting++;
+      else if (r.tone in t) t[r.tone]++;
+    }
     return t;
   }
 
@@ -527,15 +544,23 @@ export function openAddPapersModal(opts) {
     const t = tally();
     const bits = [];
     if (t.ok) bits.push(`${t.ok} added`);
-    if (t.dup) bits.push(`${t.dup} already in library`);
+    if (t.dup) bits.push(`${t.dup} already in project`);
     if (t.uploaded) bits.push(`${t.uploaded} uploaded by hand`);
-    if (t.failed) bits.push(`${t.failed} failed`);
+    if (t.failed) bits.push(`${t.failed} need attention`);
     summary.textContent = bits.join(" · ");
     summary.hidden = !bits.length;
 
-    stopBtn.hidden = !st.running;
-    retryBtn.hidden = st.running || !t.failed;
-    retryBtn.textContent = `Retry failed (${t.failed})`;
+    // What can be retried is what the JOB says failed — a row uploaded by
+    // hand since then is settled, whatever the job thought of it.
+    const retryable = st.job && !st.running
+      ? (st.job.items || []).filter(it => (it.state === "failed" || it.state === "cancelled")
+          && !(st.rows.get(it.ref) || {}).uploaded).length
+      : 0;
+    stopBtn.hidden = !st.running || !st.job;
+    stopBtn.disabled = false;
+    retryBtn.hidden = st.running || !retryable;
+    retryBtn.disabled = false;
+    retryBtn.textContent = `Retry failed (${retryable})`;
     skipBtn.hidden = st.running;
     // Skip leaves every unresolved id behind and moves on with what worked.
     skipBtn.textContent = t.failed ? `Skip ${t.failed} and continue` : "Continue";
@@ -543,10 +568,20 @@ export function openAddPapersModal(opts) {
 
   function renderProgress() {
     if (st.closed) return;
-    const total = st.batch.length;
-    fill.style.width = total ? Math.round(st.done / total * 100) + "%" : "0%";
-    progressLabel.textContent = total ? `${st.done} of ${total} complete` : "";
+    const total = st.order.length;
+    const done = st.localDone + (st.job ? countFinishedRows() : 0);
+    fill.style.width = total ? Math.round(done / total * 100) + "%" : "0%";
+    progressLabel.textContent = total ? `${done} of ${total} complete` : "";
     progress.classList.toggle("on", total > 0);
+  }
+  function countFinishedRows() {
+    let n = 0;
+    for (const it of (st.job && st.job.items) || []) {
+      if (it.state !== "waiting" && it.state !== "running") n++;
+    }
+    // A retry job only holds the retried ids; the ones the first job settled
+    // are still settled.
+    return n + st.settledBefore;
   }
 
   // Drafts this pmid's declared ids (from the "PMID + variant IDs" paste
@@ -557,87 +592,128 @@ export function openAddPapersModal(opts) {
     if (ids.length) st.groupItemsByUid.set(uid, ids.map(label => ({ rowId: null, label })));
   }
 
-  async function runBatch(pmids) {
-    st.batch = pmids;
-    st.done = 0;
-    st.runAdded = [];
-    st.running = true;
-    st.abort = new AbortController();
-    pmids.forEach(p => setRow(p, "pending"));
-    renderProgress(); renderSummary();
-
-    await pool(pmids, CONC, async (pmid) => {
-      if (st.abort.signal.aborted) return;
-      setRow(pmid, "running");
-      try {
-        const paper = await onFetchOne(pmid, { signal: st.abort.signal });
-        st.runAdded.push(paper);
-        st.papers.set(paper.uid, paper);
-        stashVariantIds(paper.uid, pmid);
-        setRow(pmid, "ok", "");
-      } catch (err) {
-        if (err && err.name === "AbortError") setRow(pmid, "failed", "cancelled");
-        else if (err && err.status === 409) setRow(pmid, "dup", err.message);
-        else setRow(pmid, "failed", (err && err.message) || "could not fetch this paper");
-      } finally {
-        st.done++;
-        renderProgress(); renderSummary();
-      }
-    });
-
-    const cancelled = st.abort.signal.aborted;
-    if (cancelled) pmids.forEach(p => {
-      const r = st.rows.get(p);
-      if (r && (r.state === "pending" || r.state === "running")) setRow(p, "failed", "cancelled");
-    });
-
-    st.running = false;
-    renderSummary();
-    const t = tally();
-    onBatchDone({ added: st.runAdded, duplicate: t.dup, failed: t.failed, cancelled });
-    // Straight through to extraction (or the variants step first) when nothing
-    // needs the curator.
-    if (!cancelled && !t.failed) gotoAfterIntake();
-  }
-
-  function startFetch() {
-    if (st.running || !parsedPmids().length) return;
-    const ids = parsedPmids();
-    if (ids.length > CONFIRM_CAP &&
-        !window.confirm(`${ids.length} PMIDs will be fetched one paper at a time. This will run for a long while. Continue?`)) {
+  // A job item that produced (or found) a paper: carry it into the later steps.
+  function adopt(pmid, uid) {
+    if (!uid) {
+      const existing = findByPmid && findByPmid(pmid);
+      if (existing) { st.papers.set(existing.uid, existing); stashVariantIds(existing.uid, pmid); }
       return;
     }
+    st.resolving.push(resolvePaper(uid).then(p => {
+      if (p) { st.papers.set(p.uid, p); stashVariantIds(p.uid, pmid); }
+    }).catch(() => {}));
+  }
+
+  function onImportTick(job) {
+    if (st.closed || !st.job || job.id !== st.job.id) return;
+    st.job = job;
+    for (const it of job.items || []) {
+      const r = st.rows.get(it.ref);
+      if (!r || r.uploaded) continue;
+      const settled = it.state !== "waiting" && it.state !== "running";
+      if (settled && !r.adopted &&
+          (it.outcome === "added" || it.outcome === "added_abstract" || it.outcome === "duplicate")) {
+        r.adopted = true;
+        adopt(it.ref, it.result && it.result.uid);
+      }
+      setRow(it.ref, importItemView(it), it.outcome);
+    }
+    st.running = isActive(job);
+    renderProgress(); renderSummary();
+    if (!st.running && !st.advanced) {
+      st.advanced = true;
+      if (job.state === "failed" && job.error) {
+        summary.textContent = `The import stopped: ${job.error}`;
+        summary.hidden = false;
+      }
+      // Straight through to the next step when nothing needs the curator.
+      if (job.state === "done" && !tally().failed) continueAfterFetch();
+    }
+  }
+
+  function attachJob(job) {
+    if (st.unfollow) st.unfollow();
+    st.job = job;
+    st.advanced = false;
+    st.running = isActive(job);
+    st.unfollow = followJob(job.id, onImportTick, job);
+    renderProgress(); renderSummary();
+  }
+
+  // Waits for the papers the job added to be looked up first — the next steps
+  // need the paper objects, not just their ids.
+  async function continueAfterFetch() {
+    skipBtn.disabled = true;
+    await Promise.all(st.resolving);
+    skipBtn.disabled = false;
+    if (!st.closed && st.step === "fetching") gotoAfterIntake();
+  }
+
+  async function startFetch() {
+    if (st.running || !parsedPmids().length) return;
+    const ids = parsedPmids();
+    if (ids.length > MAX_JOB) return;
     goto("fetching");
     buildRows(ids);
-    // Pre-flight: anything already in the library is settled without a request.
-    // On a re-pasted list this turns an hours-long no-op into an instant one.
+    st.job = null; st.localDone = 0; st.settledBefore = 0; st.resolving = [];
+    // Pre-flight: anything already in the project is settled without asking
+    // the server. On a re-pasted list this turns a long no-op into an instant one.
     const todo = [];
     for (const pmid of ids) {
       // Already-held papers still belong to this run — the curator asked for
       // them by id, so they carry through to the extraction step.
       const existing = findByPmid && findByPmid(pmid);
       if (existing) {
-        setRow(pmid, "dup", "already in your library");
+        setRow(pmid, { label: "in project", tone: "dup", msg: "already in this project" });
         st.papers.set(existing.uid, existing);
         stashVariantIds(existing.uid, pmid);
+        st.localDone++;
       } else todo.push(pmid);
     }
     if (!todo.length) {
-      st.batch = []; st.done = 0;
       renderProgress(); renderSummary();
-      onBatchDone({ added: [], duplicate: tally().dup, failed: 0, cancelled: false });
       gotoAfterIntake();
       return;
     }
-    runBatch(todo);
+    st.running = true;
+    renderProgress(); renderSummary();
+    try {
+      attachJob(await onStartImport(todo));
+    } catch (err) {
+      st.running = false;
+      todo.forEach(p => setRow(p, { label: "failed", tone: "failed",
+        msg: (err && err.message) || "could not start the import" }));
+      renderProgress(); renderSummary();
+    }
   }
 
-  stopBtn.onclick = () => { stopBtn.disabled = true; if (st.abort) st.abort.abort(); };
-  retryBtn.onclick = () => {
-    const failed = st.order.filter(p => st.rows.get(p).state === "failed");
-    if (failed.length) runBatch(failed);
+  // Cancelling is explicit: the job stops picking up new ids; ones already
+  // being fetched finish. Closing the modal does NOT do this.
+  stopBtn.onclick = async () => {
+    if (!st.job) return;
+    stopBtn.disabled = true;
+    try { onImportTick(await onCancelJob(st.job.id)); }
+    catch (err) { summary.textContent = err.message; summary.hidden = false; stopBtn.disabled = false; }
   };
-  skipBtn.onclick = () => gotoAfterIntake();
+  retryBtn.onclick = async () => {
+    if (!st.job) return;
+    retryBtn.disabled = true;
+    try {
+      const next = await onRetryJob(st.job.id);
+      // Everything the old job settled for good stays settled.
+      const retried = new Set((next.items || []).map(it => it.ref));
+      st.settledBefore = st.order.filter(p => !retried.has(p)).length - st.localDone;
+      for (const ref of retried) {
+        const r = st.rows.get(ref);
+        if (r && !r.uploaded) { r.adopted = false; setRow(ref, { label: "waiting", tone: "pending", msg: "" }); }
+      }
+      attachJob(next);
+    } catch (err) {
+      retryBtn.disabled = false;
+      summary.textContent = err.message; summary.hidden = false;
+    }
+  };
+  skipBtn.onclick = () => continueAfterFetch();
 
   /* ================= STEP: upload ================= */
   const uploadPane = el("div", "modal-pane");
@@ -779,15 +855,28 @@ export function openAddPapersModal(opts) {
   extractPane.hidden = true;
   body.appendChild(extractPane);
 
-  const exState = { checks: [], engine: null, rows: new Map(), running: false, done: 0, total: 0 };
+  // scope: bulk mode only — "current" (the open paper) | "lacking" (every
+  // paper without a run for at least one of the chosen models).
+  const exState = { checks: [], job: null, unfollow: null,
+                    scope: bulk && bulk.currentUid ? "current" : "lacking" };
+
+  function chosenModels() { return exState.checks.filter(c => c.checked).map(c => c.value); }
+
+  // The papers the Extract button will send, given the models ticked now.
+  function extractTargets() {
+    if (!bulk) return [...st.papers.values()].filter(p => p.pmidStatus !== "pending");
+    const all = bulk.papers().filter(p => p.pmidStatus !== "pending");
+    if (exState.scope === "current") return all.filter(p => p.uid === bulk.currentUid);
+    const models = chosenModels();
+    return all.filter(p => models.some(m => !bulk.hasRun(p.uid, m)));
+  }
 
   function renderExtractStep() {
     extractPane.innerHTML = "";
     exState.checks = [];
-    exState.rows.clear();
 
-    const papers = [...st.papers.values()];
-    if (!papers.length) {
+    const papers = bulk ? [] : [...st.papers.values()];
+    if (!bulk && !papers.length) {
       extractPane.appendChild(el("div", "modal-hint", "No papers were added, so there is nothing to extract."));
       const acts = el("div", "step-actions");
       const b = el("button", "btn primary", "Close");
@@ -860,8 +949,22 @@ export function openAddPapersModal(opts) {
       extractPane.appendChild(box);
     }
 
-    const ready = papers.filter(p => p.pmidStatus !== "pending");
-    extractPane.appendChild(el("div", "modal-lab", `Run AI extraction — ${plural(ready.length, "paper")} ready`));
+    // Managers only, and only where the server has an OpenRouter key. The
+    // papers are in the project either way; someone with access can run it later.
+    if (!canExtract) {
+      extractPane.appendChild(el("div", "modal-lab", "AI extraction"));
+      extractPane.appendChild(el("div", "modal-hint",
+        "AI extraction isn't available here — it needs a project manager, and the server must have an extraction key configured."));
+      const acts = el("div", "step-actions");
+      const b = el("button", "btn primary", "Finish");
+      b.onclick = close;
+      acts.appendChild(b);
+      extractPane.appendChild(acts);
+      return;
+    }
+
+    const heading = el("div", "modal-lab");
+    extractPane.appendChild(heading);
 
     const picks = el("div", "model-picks");
     for (const m of config.models) {
@@ -874,6 +977,26 @@ export function openAddPapersModal(opts) {
     }
     extractPane.appendChild(picks);
 
+    // Bulk: which papers. Counted live, since "lacking a run" depends on the
+    // models ticked above.
+    let scopeBox = null;
+    if (bulk) {
+      scopeBox = el("div", "ex-scope");
+      const opt = (value, text) => {
+        const lab = el("label");
+        const rb = el("input"); rb.type = "radio"; rb.name = "exScope"; rb.value = value;
+        rb.checked = exState.scope === value;
+        rb.onchange = () => { exState.scope = value; refresh(); };
+        const span = el("span", null, text);
+        lab.appendChild(rb); lab.appendChild(span);
+        scopeBox.appendChild(lab);
+        return span;
+      };
+      if (bulk.currentUid) opt("current", "The open paper");
+      exState.lackingLabel = opt("lacking", "Every paper without a run for the chosen models");
+      extractPane.appendChild(scopeBox);
+    }
+
     const row = el("div", "extract-row");
     const sel = el("select");
     for (const e of config.parseEngines) {
@@ -884,7 +1007,6 @@ export function openAddPapersModal(opts) {
     }
     row.appendChild(sel);
     extractPane.appendChild(row);
-    exState.engine = sel;
 
     const engineWarn = el("div", "engine-warn");
     const syncWarn = () => engineWarn.textContent = sel.value === "mistral-ocr"
@@ -906,21 +1028,72 @@ export function openAddPapersModal(opts) {
     extractPane.appendChild(exList);
 
     const acts = el("div", "step-actions");
-    const runBtn = el("button", "btn primary", `Extract ${plural(ready.length, "paper")}`);
-    const doneBtn = el("button", "btn", "Finish");
+    const runBtn = el("button", "btn primary");
+    const doneBtn = el("button", "btn", bulk ? "Close" : "Finish");
     acts.appendChild(runBtn); acts.appendChild(doneBtn);
     extractPane.appendChild(acts);
     doneBtn.onclick = close;
+    extractPane.appendChild(el("div", "modal-hint",
+      "Extraction runs on the server. You can close this window — it keeps going, and the results appear on each paper as they finish."));
 
-    runBtn.disabled = !ready.length || !!unconfirmed.length;
     if (unconfirmed.length) {
       extractPane.appendChild(el("div", "modal-hint",
         "Resolve every paper above to enable extraction."));
     }
 
+    function refresh() {
+      if (exState.job && isActive(exState.job)) return;   // mid-run: leave the button alone
+      const n = extractTargets().length;
+      if (bulk) {
+        const lacking = bulk.papers().filter(p => p.pmidStatus !== "pending")
+          .filter(p => chosenModels().some(m => !bulk.hasRun(p.uid, m))).length;
+        exState.lackingLabel.textContent =
+          `Every paper without a run for the chosen models (${lacking})`;
+        heading.textContent = "Run AI extraction";
+      } else {
+        heading.textContent = `Run AI extraction — ${plural(n, "paper")} ready`;
+      }
+      runBtn.textContent = n ? `Extract ${plural(n, "paper")}` : "Nothing to extract";
+      runBtn.disabled = !n || !!unconfirmed.length || !chosenModels().length;
+    }
+    exState.checks.forEach(cb => { cb.onchange = refresh; });
+    refresh();
+
+    const nodes = new Map();   // uid -> {s, m}
+    function onExtractTick(job) {
+      if (st.closed || !exState.job || job.id !== exState.job.id) return;
+      exState.job = job;
+      for (const it of job.items || []) {
+        const n = nodes.get(it.ref);
+        if (!n) continue;
+        const v = extractItemView(it);
+        n.s.className = "bp-state " + v.tone;
+        n.s.innerHTML = "";
+        if (v.tone === "running") n.s.appendChild(el("span", "spinner-ring"));
+        else n.s.textContent = v.label;
+        n.m.textContent = v.msg;
+      }
+      const { finished, total } = jobProgress(job);
+      exFill.style.width = total ? Math.round(finished / total * 100) + "%" : "0%";
+      exLabel.textContent = `${finished} of ${total} complete`;
+      if (isActive(job)) return;
+
+      // Finish becomes the CTA once the run is done; re-running is the side door.
+      runBtn.classList.remove("extracting");
+      runBtn.className = "btn";
+      runBtn.textContent = "Extract again";
+      runBtn.disabled = false;
+      doneBtn.className = "btn primary";
+      if (job.state === "failed" && job.error) {
+        engineWarn.textContent = `Extraction stopped: ${job.error}`;
+      }
+    }
+
     runBtn.onclick = async () => {
-      const models = exState.checks.filter(c => c.checked).map(c => c.value);
+      const models = chosenModels();
       if (!models.length) { engineWarn.textContent = "Pick at least one model."; return; }
+      const targets = extractTargets();
+      if (!targets.length) { refresh(); return; }
       runBtn.disabled = true;
       runBtn.innerHTML = "";
       runBtn.appendChild(el("span", "btn-spinner"));
@@ -928,46 +1101,37 @@ export function openAddPapersModal(opts) {
       runBtn.classList.add("extracting");
       exList.innerHTML = ""; exList.hidden = false;
       exProgress.classList.add("on");
+      exFill.style.width = "0%";
+      exLabel.textContent = `0 of ${targets.length} complete`;
 
-      const nodes = new Map();
-      for (const p of ready) {
+      nodes.clear();
+      for (const p of targets) {
         const r = el("div", "batch-row");
-        r.appendChild(el("span", "bp-id", p.pmid));
-        const s = el("span", "bp-state pending", "queued");
+        r.appendChild(el("span", "bp-id", p.pmid || p.doi || p.filename));
+        const s = el("span", "bp-state pending", "waiting");
         const m = el("span", "bp-msg");
         r.appendChild(s); r.appendChild(m);
         exList.appendChild(r);
-        nodes.set(p.pmid, { s, m });
+        nodes.set(p.uid, { s, m });
       }
 
-      let done = 0;
-      // Extraction is sequential: each run is a multi-model LLM call against a
-      // paid API, and firing them in parallel makes cost and rate limits worse
-      // for no wall-clock win the curator can act on.
-      for (const p of ready) {
-        const n = nodes.get(p.pmid);
-        n.s.className = "bp-state running"; n.s.innerHTML = "";
-        n.s.appendChild(el("span", "spinner-ring"));
-        try {
-          const runs = await onExtract(p, models, sel.value);
-          const ok = runs.filter(r => r.status !== "failed").length;
-          n.s.className = "bp-state " + (ok ? "ok" : "failed");
-          n.s.textContent = ok ? "done" : "failed";
-          n.m.textContent = `${ok}/${runs.length} model(s) ok`;
-        } catch (err) {
+      try {
+        // ONE job for every paper: the server runs a few at a time, and keeps
+        // going if this window closes.
+        const job = await onStartExtract({ uids: targets.map(p => p.uid), models, parseEngine: sel.value });
+        if (exState.unfollow) exState.unfollow();
+        exState.job = job;
+        exState.unfollow = followJob(job.id, onExtractTick, job);
+      } catch (err) {
+        runBtn.classList.remove("extracting");
+        runBtn.className = "btn primary";
+        runBtn.textContent = "Try again";
+        runBtn.disabled = false;
+        engineWarn.textContent = (err && err.message) || "could not start extraction";
+        for (const n of nodes.values()) {
           n.s.className = "bp-state failed"; n.s.textContent = "failed";
-          n.m.textContent = (err && err.message) || "extraction failed";
         }
-        done++;
-        exFill.style.width = Math.round(done / ready.length * 100) + "%";
-        exLabel.textContent = `${done} of ${ready.length} complete`;
       }
-
-      // Finish becomes the CTA once the run is done; re-running is the side door.
-      runBtn.className = "btn";
-      runBtn.textContent = "Extract again";
-      runBtn.disabled = false;
-      doneBtn.className = "btn primary";
     };
   }
 
@@ -989,5 +1153,5 @@ export function openAddPapersModal(opts) {
 
   recount();
   showIdTab("paste");
-  goto("source");
+  goto(bulk ? "extract" : "source");
 }

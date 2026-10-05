@@ -1,18 +1,37 @@
 // annotaid app orchestrator.
+//
+// Everyone is signed in, and what they may do in this project comes from the
+// server (`state.me`, `state.permissions`). Two rules shape the whole screen:
+//   - managers add papers, run extraction, export, assign and staff the team;
+//   - only a paper's assignee, while it is in progress, edits its curated
+//     values. Every other paper renders read only (paperActions.canEdit).
+// The server enforces both; the UI just doesn't offer what would only error.
 import { api, setProject } from "./api.js";
 import { $, el, toast, downloadFile } from "./dom.js";
+import { renderUserMenu } from "./session.js";
 import * as viewer from "./pdfViewer.js";
 import * as store from "./store.js";
-import { renderPaperList } from "./paperList.js";
+import { renderPaperList, paperLabel, STATUS_FILTERS } from "./paperList.js";
 import { renderIdentityBox } from "./identityBox.js";
-import { renderFeature } from "./featureEditor.js";
+import { renderFeature, lockControls } from "./featureEditor.js";
 import { renderGroup } from "./groupEditor.js";
 import { renderGroupItemsList } from "./groupItemsList.js";
 import { openAddPapersModal } from "./addPapersModal.js";
+import { renderPaperBar, canEdit } from "./paperActions.js";
+import { followJob, isActive } from "./jobs.js";
+import { openJobsPanel } from "./jobsPanel.js";
+import { openTeamPanel } from "./teamPanel.js";
 
 const S = {
   config: null,
   project: null,                  // {id, name, description}
+  account: null,                  // getMe(): the signed-in account (role: superadmin | manager | user)
+  me: null,                       // state.me: {id, name, role} — role in THIS project
+  permissions: {},                // {manage, addPapers, extract, export, assign}
+  users: {},                      // user id -> name, for assignees and "confirmed by"
+  members: [],                    // this project's members (assign menu, team)
+  statusFilter: "",               // paper list filter (paperList.STATUS_FILTERS)
+  othersOpen: false,              // the paper list's "Others" section
   papers: [],
   runsByUid: {},                  // uid -> {modelId: run}
   activeUid: null,
@@ -46,14 +65,24 @@ async function boot() {
   wireLayout();
   $("#pages").addEventListener("scroll", hideSelectionBtn);
 
+  // The user menu doubles as the sign-in gate: no session -> /login, a forced
+  // password change -> /account, and either way this never resolves.
+  S.account = await renderUserMenu($("#userMenu"));
+
+  // Autosave never fires for a paper this user can't edit, and a 403 that
+  // slips through anyway (reassigned under us) resyncs instead of retrying.
+  store.setEditGuard(uid => canEdit(paper(uid), S.me));
+  store.setForbiddenHandler(() => reloadState());
+
   // Flushes buffered edits for EVERY project, not just this one.
   try { await store.flushPending(); } catch (_) {}
 
   try {
     S.config = await api.config();
   } catch (err) {
-    // A stale bookmark, or a project that has been archived: go home with a
-    // reason rather than sitting on a half-rendered app.
+    // A stale bookmark, a project that has been archived, or one this account
+    // isn't a member of (the server answers 404 for all three): go home with
+    // a reason rather than sitting on a half-rendered app.
     if (err.status === 404) {
       location.replace("/?missing=" + encodeURIComponent(pid));
       return;
@@ -61,15 +90,40 @@ async function boot() {
     throw err;
   }
   S.project = S.config.project;
+  S.permissions = S.config.permissions || {};
   applyProjectChrome();
 
-  const state = await api.state();
+  applyState(await api.state());
+  renderLeft();
+  // Land on my own work first, then anything identified.
+  const first = S.papers.find(p => canEdit(p, S.me))
+    || S.papers.find(p => p.pmidStatus !== "pending") || S.papers[0];
+  if (first) selectPaper(first.uid);
+  updateGlobalStat();
+  resumeJobs();
+}
+
+// Everything /state carries that isn't per-paper UI.
+function applyState(state) {
   S.papers = state.papers || [];
   S.runsByUid = indexRuns(state.runs || []);
-  renderLeft();
-  const firstReady = S.papers.find(p => p.pmidStatus !== "pending") || S.papers[0];
-  if (firstReady) selectPaper(firstReady.uid);
-  updateGlobalStat();
+  S.me = state.me || S.me;
+  S.permissions = state.permissions || S.permissions;
+  S.users = state.users || {};
+  S.members = state.members || [];
+  applyPermissions();
+}
+
+// Hide what this role can't do. `hidden` (not disabled) for the header: a
+// curator has no use for a greyed-out "Add Paper(s)".
+function applyPermissions() {
+  const P = S.permissions || {};
+  $("#addPdfBtn").hidden = !P.addPapers;
+  $("#importbtn").hidden = !P.manage;          // model-output import is manager-only too
+  $("#extractBtn").hidden = !P.extract;
+  $("#downloadwrap").hidden = !P.export;
+  $("#jobsBtn").hidden = !P.manage;
+  $("#teamBtn").hidden = !P.manage;
 }
 
 function indexRuns(arr) {
@@ -90,27 +144,73 @@ function paper(uid) { return S.papers.find(p => p.uid === uid); }
 function activePaper() { return paper(S.activeUid); }
 
 /* ---------------- header wiring ---------------- */
-function wireHeader() {
-  $("#addPdfBtn").addEventListener("click", () => {
-    openAddPapersModal({
-      onFetchOne: fetchOnePmid,
-      onBatchDone: finishPmidBatch,
-      onUpload: uploadPdfs,
-      onConfirmPmid: confirmPaperPmid,
-      onNoPmid: markPaperNoPmid,
-      onExtract: runExtraction,
-      onFinish: finishAddPapers,
-      onSaveGroupItems: async (uid, items) => {
-        const result = await api.saveGroupItems(uid, items);
-        const p = paper(uid);
-        if (p) p.groupItems = result.items;
-        return result.items;
-      },
-      findByPmid: pmid => S.papers.find(p => p.pmid === pmid) || null,
-      config: S.config,
-      concurrency: (S.config.limits && S.config.limits.pmidFetchConcurrency) || 3,
-    });
+// What the "Add Paper(s)" stepper and its extraction-only form share.
+function modalCallbacks() {
+  return {
+    onStartImport: startImportJob,
+    onRetryJob: async jid => trackJob(await api.retryJob(jid)),
+    onCancelJob: jid => api.cancelJob(jid),
+    resolvePaper,
+    onUpload: uploadPdfs,
+    onConfirmPmid: confirmPaperPmid,
+    onNoPmid: markPaperNoPmid,
+    onStartExtract: startExtractJob,
+    onFinish: finishAddPapers,
+    onSaveGroupItems: async (uid, items) => {
+      const result = await api.saveGroupItems(uid, items);
+      const p = paper(uid);
+      if (p) p.groupItems = result.items;
+      return result.items;
+    },
+    findByPmid: pmid => S.papers.find(p => p.pmid === pmid) || null,
+    config: S.config,
+    canExtract: !!S.permissions.extract,
+  };
+}
+
+// The extraction-only form: the open paper, or every paper lacking a run.
+function openExtractModal() {
+  openAddPapersModal({
+    ...modalCallbacks(),
+    bulk: {
+      papers: () => S.papers,
+      hasRun: (uid, model) => !!(S.runsByUid[uid] || {})[model],
+      currentUid: activePaper() && activePaper().pmidStatus !== "pending" ? S.activeUid : null,
+    },
   });
+}
+
+function wireHeader() {
+  $("#addPdfBtn").addEventListener("click", () => openAddPapersModal(modalCallbacks()));
+  $("#extractBtn").addEventListener("click", openExtractModal);
+  $("#jobsBtn").addEventListener("click", () => openJobsPanel({
+    users: S.users,
+    labelFor: uid => { const p = paper(uid); return p ? paperLabel(p) : uid; },
+    onJobStarted: trackJob,
+  }));
+  $("#teamBtn").addEventListener("click", () => openTeamPanel({
+    account: S.account,
+    me: S.me,
+    onMembers: members => { S.members = members; renderBar(); },
+    onReleased: n => { toast(`${n} paper(s) went back to the pool`); reloadState(); },
+  }));
+
+  // Status filter for the paper list; remembered per browser.
+  const filter = $("#statusFilter");
+  for (const [value, label] of STATUS_FILTERS) {
+    const o = el("option", null, label);
+    o.value = value;
+    filter.appendChild(o);
+  }
+  try { S.statusFilter = localStorage.getItem("annotaid:statusFilter") || ""; } catch (_) {}
+  if (!STATUS_FILTERS.some(([v]) => v === S.statusFilter)) S.statusFilter = "";
+  filter.value = S.statusFilter;
+  filter.onchange = () => {
+    S.statusFilter = filter.value;
+    try { localStorage.setItem("annotaid:statusFilter", S.statusFilter); } catch (_) {}
+    renderLeft();
+  };
+
   $("#importbtn").addEventListener("click", () => $("#importin").click());
   $("#importin").addEventListener("change", async e => {
     const files = [...e.target.files]; e.target.value = "";
@@ -162,8 +262,8 @@ function wireLayout() {
   });
 }
 
-// opts.pmid: set when the curator came from a failed "fetch by PMID" row — it
-// prefills that paper's confirm box (it is still never auto-confirmed).
+// opts.pmid: set when the curator came from an import row with no open-access
+// PDF — it prefills that paper's confirm box (it is still never auto-confirmed).
 async function uploadPdfs(files, opts) {
   const pmid = opts && opts.pmid;
   const added = [];
@@ -180,27 +280,121 @@ async function uploadPdfs(files, opts) {
   return added;   // the stepper carries these into the confirm/extract step
 }
 
-// One PMID of a batch. Deliberately does NOT select or toast — the modal owns
-// per-id feedback and finishPmidBatch does the one summary toast at the end.
-async function fetchOnePmid(pmid, opts) {
-  const p = await api.fetchByPmid(pmid, opts);   // throws with a user-facing .message
-  const i = S.papers.findIndex(x => x.uid === p.uid);
-  if (i >= 0) S.papers[i] = p; else S.papers.push(p);
-  renderLeft(); updateGlobalStat();              // papers show up in the sidebar as they land
-  return p;
+/* ---------------- background jobs ---------------- */
+// Every job this tab starts (or finds still running on load) is followed here,
+// independently of whichever modal or panel started it: that is what puts new
+// papers in the list and new runs on screen after the modal has been closed.
+const tracked = new Set();   // job ids already followed by main.js
+
+function trackJob(job, { quietFirst = false } = {}) {
+  if (!job || tracked.has(job.id)) return job;
+  tracked.add(job.id);
+  const handled = new Set();   // item seqs already folded in
+  let first = quietFirst;
+  const unfollow = followJob(job.id, j => {
+    const items = j.items;
+    if (!items) return;          // a seed from the job list: wait for the first poll
+    const fresh = items.filter(it =>
+      it.state !== "waiting" && it.state !== "running" && !handled.has(it.seq));
+    fresh.forEach(it => handled.add(it.seq));
+    // Resumed on page load: what finished before this tab was open is already
+    // in the state we just loaded.
+    if (first) { first = false; }
+    else if (j.kind === "import") {
+      if (fresh.some(it => it.outcome === "added" || it.outcome === "added_abstract")) refreshPapers();
+    } else if (j.kind === "extract") {
+      const uids = new Set(fresh.map(it => (it.result && it.result.uid) || it.ref));
+      uids.forEach(uid => reloadRuns(uid));
+    }
+    if (!isActive(j)) {
+      unfollow();
+      tracked.delete(j.id);
+      toast(jobSummary(j));
+    }
+  }, job);
+  return job;
 }
 
-function finishPmidBatch({ added, duplicate, failed, cancelled }) {
-  // Aborting the browser fetch does not stop the server thread: it finishes the
-  // download and stores the paper regardless, so resync rather than guess.
-  if (cancelled) reloadState();
-  // Never steal the curator's open paper mid-batch.
-  if (added.length && !S.activeUid) selectPaper(added[0].uid);
+function jobSummary(j) {
+  const c = j.counts || {};
+  const what = j.kind === "import" ? "Import" : "Extraction";
+  if (j.state === "cancelled") return `${what} cancelled`;
+  if (j.state === "failed") return `${what} stopped${j.error ? `: ${j.error}` : ""}`;
   const bits = [];
-  if (added.length) bits.push(`${added.length} added`);
-  if (duplicate) bits.push(`${duplicate} already in library`);
-  if (failed) bits.push(`${failed} failed`);
-  if (bits.length) toast(bits.join(" · "));
+  if (c.done) bits.push(`${c.done} done`);
+  if (c.skipped) bits.push(`${c.skipped} skipped`);
+  if (c.failed) bits.push(`${c.failed} failed`);
+  return `${what} finished` + (bits.length ? ` — ${bits.join(" · ")}` : "");
+}
+
+// A manager reloading mid-import should still see the papers land.
+async function resumeJobs() {
+  if (!S.permissions.manage) return;
+  try {
+    const { jobs } = await api.listJobs();
+    (jobs || []).filter(isActive).forEach(j => trackJob(j, { quietFirst: true }));
+  } catch (_) { /* the Jobs panel will show it */ }
+}
+
+async function startImportJob(pmids) {
+  return trackJob(await api.createJob({ kind: "import", refs: pmids }));
+}
+
+async function startExtractJob({ uids, models, parseEngine }) {
+  return trackJob(await api.createJob({
+    kind: "extract", refs: uids, models,
+    promptId: S.config.defaults.promptId,
+    parseEngine: parseEngine || S.config.defaults.parseEngine,
+    force: false,
+  }));
+}
+
+// Re-reads the paper list. Calls made while one is in flight coalesce into ONE
+// follow-up read, so a burst of "added" items costs two requests, not twenty —
+// and nobody awaiting it sees a list from before their paper landed.
+let papersReq = null, papersAgain = false;
+function refreshPapers() {
+  if (papersReq) { papersAgain = true; return papersReq; }
+  papersReq = (async () => {
+    do {
+      papersAgain = false;
+      const { papers } = await api.papers();
+      mergePapers(papers || []);
+    } while (papersAgain);
+  })().catch(() => {}).finally(() => { papersReq = null; });
+  return papersReq;
+}
+
+function mergePapers(papers) {
+  const before = activePaper();
+  S.papers = papers;
+  renderLeft(); updateGlobalStat();
+  const after = activePaper();
+  // The open paper changed hands or state (someone else's action): redraw it
+  // so its read-only state is right. Otherwise leave the editor alone.
+  if (before && after && (before.assigneeId !== after.assigneeId
+      || before.curationStatus !== after.curationStatus || before.pmidStatus !== after.pmidStatus)) {
+    renderBar(); renderRight(); recomputeMatches();
+  }
+}
+
+// A paper a job just added, once the list has it.
+async function resolvePaper(uid) {
+  if (!paper(uid)) await refreshPapers();
+  return paper(uid) || null;
+}
+
+async function reloadRuns(uid) {
+  let runs;
+  try { ({ runs } = await api.runs(uid)); } catch (_) { return; }
+  const by = {};
+  for (const r of runs || []) by[r.modelId] = r;
+  S.runsByUid[uid] = by;
+  renderLeft();
+  if (uid === S.activeUid) {
+    if (!S.activeModelByUid[uid] && runs && runs[0]) S.activeModelByUid[uid] = runs[0].modelId;
+    renderRight(); recomputeMatches();
+  }
 }
 
 async function importJson(files) {
@@ -217,9 +411,9 @@ async function importJson(files) {
 }
 
 async function reloadState() {
-  const state = await api.state();
-  S.papers = state.papers || [];
-  S.runsByUid = indexRuns(state.runs || []);
+  let state;
+  try { state = await api.state(); } catch (err) { toast(`Could not reload: ${err.message}`); return; }
+  applyState(state);
   renderLeft(); updateGlobalStat();
   if (S.activeUid) selectPaper(S.activeUid);
 }
@@ -228,8 +422,44 @@ async function reloadState() {
 function renderLeft() {
   renderPaperList($("#doclist"), S.papers, {
     activeUid: S.activeUid, runsByUid: S.runsByUid, onSelect: selectPaper,
+    me: S.me, users: S.users, filter: S.statusFilter,
+    othersOpen: S.othersOpen, onToggleOthers: open => { S.othersOpen = open; },
   });
   $("#doccount").textContent = S.papers.length;
+}
+
+/* ---------------- workflow bar (above the PDF) ---------------- */
+function renderBar() {
+  renderPaperBar($("#paperbar"), activePaper(), {
+    me: S.me,
+    isManager: !!S.permissions.assign,
+    members: S.members,
+    users: S.users,
+    onPaper: updatePaper,
+    onError: err => {
+      toast(err.message || "That didn't work");
+      // Someone else got there first (409) or it's no longer ours (403):
+      // what is on screen is stale.
+      if (err.status === 409 || err.status === 403) reloadState();
+    },
+  });
+}
+
+// A workflow action came back with the updated paper.
+function updatePaper(p) {
+  const i = S.papers.findIndex(x => x.uid === p.uid);
+  if (i >= 0) S.papers[i] = p; else S.papers.push(p);
+  renderLeft();
+  if (p.uid === S.activeUid) { renderBar(); renderRight(); recomputeMatches(); }
+  // In-progress counts on the team list moved; cheap to refresh.
+  api.members().then(r => { S.members = r.members || S.members; }).catch(() => {});
+}
+
+// May this user change the paper's SET-UP — its identity and declared group
+// rows? Managers always (extraction needs both), otherwise only the assignee
+// while it's in progress (server/workflow.setup_block_reason).
+function canSetup(p) {
+  return !!S.permissions.manage || canEdit(p, S.me);
 }
 
 function updateGlobalStat() {
@@ -243,8 +473,11 @@ function updateGlobalStat() {
 async function selectPaper(uid) {
   S.activeUid = uid;
   S.cardIndex = 0;
-  renderLeft();
   const p = paper(uid);
+  // Held by someone else: make sure the (collapsible) Others section is open,
+  // so the paper on screen is visible in the list. The curator can collapse it.
+  if (p && p.assigneeId && S.me && p.assigneeId !== S.me.id) S.othersOpen = true;
+  renderLeft();
   if (!p) return;
   // A DOI or a filename is case-sensitive, and .sub is uppercased by default —
   // showing "10.1016/J.AJHG..." invites the curator to copy out a DOI that
@@ -255,6 +488,7 @@ async function selectPaper(uid) {
     ? "identify this paper"
     : (p.pmid ? `PMID ${p.pmid}` : (p.doi ? `DOI ${p.doi}` : p.filename));
   sub.classList.toggle("exact", exact);
+  renderBar();
   renderRight();
 
   // render the PDF — always by uid, which every paper has from the moment its
@@ -300,15 +534,20 @@ function renderRight() {
   const p = activePaper();
   if (!p) { pane.innerHTML = `<div class="empty-feat">Select a paper.</div>`; setViewToggle(null); setExtractPanel(null); return; }
 
+  const setup = canSetup(p);
+
   // Only 'pending' blocks curation. A paper with no PubMed ID has still been
   // identified, so it falls through to the normal extraction view.
   if (p.pmidStatus === "pending") {
-    pane.appendChild(renderIdentityBox(p, {
+    const box = renderIdentityBox(p, {
       onConfirm: (pmid, source) => confirmPmid(p.uid, pmid, source),
       onNoPmid: doi => markNoPmid(p.uid, doi),
-    }));
-    pane.appendChild(el("div", "no-runs",
-      "Confirm a PubMed ID — or record that this paper has none — to enable AI extraction."));
+    });
+    if (!setup) lockControls(box);
+    pane.appendChild(box);
+    pane.appendChild(el("div", "no-runs", setup
+      ? "Confirm a PubMed ID — or record that this paper has none — to enable AI extraction."
+      : "This paper's identity hasn't been confirmed yet. Its assignee or a project manager can confirm it."));
     $("#featstat").textContent = "";
     setViewToggle(null);
     setExtractPanel(null);
@@ -322,11 +561,24 @@ function renderRight() {
   // by the curator before extraction can use it at all (server/extraction.py)
   // — so this has to be visible whether or not a run exists yet.
   const groupDef = (S.config.features || []).find(f => f.type === "group");
-  if (groupDef) pane.appendChild(renderGroupItemsPanel(p, groupDef));
+  if (groupDef) {
+    const gi = renderGroupItemsPanel(p, groupDef);
+    if (!setup) lockControls(gi);
+    pane.appendChild(gi);
+  }
 
   const runs = S.runsByUid[p.uid] || {};
   if (!Object.keys(runs).length) {
-    pane.appendChild(el("div", "no-runs", "No AI runs yet. Run extraction from “Add Paper(s)”, or Import existing outputs."));
+    const box = el("div", "no-runs");
+    if (S.permissions.extract) {
+      box.appendChild(el("div", null, "No AI runs yet."));
+      const b = el("button", "btn primary no-runs-btn", "Run extraction…");
+      b.onclick = openExtractModal;
+      box.appendChild(b);
+    } else {
+      box.textContent = "No AI runs yet. A project manager runs AI extraction on papers.";
+    }
+    pane.appendChild(box);
     $("#featstat").textContent = "";
     setViewToggle(null);
     return;
@@ -492,6 +744,7 @@ function updateFeatStat(run) {
 
 function makeCard(run, fdef, isCard) {
   let card;
+  const readOnly = !canEdit(paper(run.uid), S.me);
   if (fdef.type === "group") {
     card = renderGroup(fdef, run.groups[fdef.name], {
       openRowId: S.openRowByGroup[fdef.name] || null,
@@ -504,9 +757,13 @@ function makeCard(run, fdef, isCard) {
       onActivateEvidence: key => viewer.activateFeature(key),
       groupItemLabels: groupItemLabelsFor(paper(run.uid)),
       onDeclareItem: label => declareGroupItem(paper(run.uid), label),
+      readOnly,
+      users: S.users,
     });
   } else {
     card = renderFeature(fdef, run.features[fdef.name], {
+      readOnly,
+      users: S.users,
       partial: !!S.partialByFeature[fdef.name],
       onEdit: () => onFeatureEdit(run),
       onActivateEvidence: name => viewer.activateFeature(name),
@@ -546,6 +803,7 @@ function activateCurrentCard(run) {
 }
 
 function onFeatureEdit(run) {
+  if (!canEdit(paper(run.uid), S.me)) return;   // controls are disabled; belt and braces
   store.scheduleSave(run.uid, run.modelId, run);
   // refresh confirm count + left list without a full rebuild — nothing in the
   // extract panel depends on a single feature edit (it only reflects which
@@ -640,7 +898,9 @@ function applyMatches(results) {
     }
   }
   renderFeatureCards(run);
-  if (changed) store.scheduleSave(run.uid, run.modelId, run);
+  // Re-matching evidence happens on every load. It is only worth saving — and
+  // only allowed — on a paper this user is curating.
+  if (changed && canEdit(p, S.me)) store.scheduleSave(run.uid, run.modelId, run);
 }
 
 /* ---------------- PDF selection -> evidence (card view only) ---------------- */
@@ -657,6 +917,9 @@ let listViewSelectHintShown = false;
 
 function handleTextSelection(sel) {
   if (!sel) { listViewSelectHintShown = false; hideSelectionBtn(); return; }
+  // Selecting text to copy it is fine on any paper; turning it into a value
+  // is curation, so not on a read-only one.
+  if (!canEdit(activePaper(), S.me)) { hideSelectionBtn(); return; }
   if (S.viewMode !== "card") {
     // Selecting text here used to be a silent no-op outside Card view — easy to
     // mistake for "this feature doesn't work" and fall back to typing the quote
@@ -701,6 +964,7 @@ function applyHighlightToValue(rawText, fdef, run) {
   const feat = run.features[fdef.name];
   const text = rawText.trim();
   if (!feat || !text) return;
+  if (!canEdit(paper(run.uid), S.me)) return;
 
   if (fdef.type === "boolean") {
     toast(`"${fdef.name}" is a true/false feature — use the toggle instead of a highlight`);
@@ -730,7 +994,8 @@ function applyHighlightToValue(rawText, fdef, run) {
   feat.present = true;
 
   renderFeatureCards(run);
-  store.scheduleSave(run.uid, run.modelId, run.features);
+  // The whole run, like every other save: editableRun() reads run.features.
+  store.scheduleSave(run.uid, run.modelId, run);
   toast(`Added to "${fdef.name}"`);
 }
 
@@ -826,8 +1091,10 @@ function modelSelect(p, runs) {
   return sel;
 }
 
-// Extraction is driven from the "Add Paper(s)" stepper now, so this pane keeps
-// only the per-model result switcher — which model's output you are reading.
+// Extraction is an extract job started from the "Add Paper(s)" stepper or the
+// header's "Run extraction…" (managers), so this pane keeps only the per-model
+// result switcher — which model's output you are reading. A finished job's
+// runs arrive through trackJob -> reloadRuns.
 function modelBar(p) {
   const runs = S.runsByUid[p.uid] || {};
   if (!Object.keys(runs).length) return null;
@@ -835,20 +1102,6 @@ function modelBar(p) {
   bar.appendChild(el("span", "lab", "Model"));
   bar.appendChild(modelSelect(p, runs));
   return bar;
-}
-
-// Runs one paper through the extraction endpoint and folds the result into
-// state. Returns the runs so the caller can report per-model success; it throws
-// on failure rather than toasting, because the stepper shows its own per-paper row.
-async function runExtraction(p, models, parseEngine) {
-  const engine = parseEngine || S.config.defaults.parseEngine;
-  const { runs } = await api.extract(p.uid, models, S.config.defaults.promptId, engine, false);
-  const cur = S.runsByUid[p.uid] = S.runsByUid[p.uid] || {};
-  for (const r of runs) cur[r.modelId] = r;
-  S.activeModelByUid[p.uid] = runs[0] ? runs[0].modelId : S.activeModelByUid[p.uid];
-  S.cardIndex = 0;
-  renderRight(); recomputeMatches(); renderLeft();
-  return runs;
 }
 
 // The stepper closed: land on whatever it produced, so the curator isn't

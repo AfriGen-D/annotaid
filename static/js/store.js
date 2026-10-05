@@ -18,6 +18,16 @@ const DEBOUNCE_MS = 600;
 
 const timers = new Map();             // key -> timeout id
 
+// Only the paper's assignee, while it is in progress, may save curated values
+// (the server answers anyone else with a 403). main.js installs the rule here
+// so NO save path — a stray evidence re-match on load included — can fire for
+// a read-only paper, and onForbidden so a 403 that slips through anyway (the
+// paper was reassigned under us) is shown and the state reloaded.
+let canSave = () => true;
+let onForbidden = () => {};
+export function setEditGuard(fn) { canSave = fn; }
+export function setForbiddenHandler(fn) { onForbidden = fn; }
+
 function key(uid, modelId) { return uid + " " + modelId; }
 function bufKey(uid, modelId) { return BUF + projectId() + " " + uid + " " + modelId; }
 
@@ -69,6 +79,7 @@ function clearBuffer(uid, modelId) {
 
 // Debounced autosave: called on every edit/confirm.
 export function scheduleSave(uid, modelId, run) {
+  if (!canSave(uid)) return;                  // read-only: nothing to keep either
   writeBuffer(uid, modelId, run);             // synchronous, refresh-safe
   const k = key(uid, modelId);
   clearTimeout(timers.get(k));
@@ -80,6 +91,14 @@ async function flush(uid, modelId, run) {
     await api.saveRun(uid, modelId, editableRun(run));
     clearBuffer(uid, modelId);
   } catch (e) {
+    // A 403 will never succeed on retry — the paper isn't ours to edit (any
+    // more). Drop the buffer, say why, and let main.js resync.
+    if (e && e.status === 403) {
+      clearBuffer(uid, modelId);
+      toast(e.message || "You can't edit this paper");
+      onForbidden(e);
+      return;
+    }
     toast("Autosave failed — will retry (kept locally)");
   }
 }
@@ -94,10 +113,20 @@ async function flush(uid, modelId, run) {
 export async function flushNow(uid, modelId, run) {
   const k = key(uid, modelId);
   clearTimeout(timers.get(k));
+  if (!canSave(uid)) {
+    const e = new Error("This paper is read only for you");
+    e.status = 403;
+    throw e;
+  }
   writeBuffer(uid, modelId, run);
-  const res = await api.saveRun(uid, modelId, editableRun(run));
-  clearBuffer(uid, modelId);
-  return res.run;
+  try {
+    const res = await api.saveRun(uid, modelId, editableRun(run));
+    clearBuffer(uid, modelId);
+    return res.run;
+  } catch (e) {
+    if (e && e.status === 403) clearBuffer(uid, modelId);   // see flush()
+    throw e;
+  }
 }
 
 // On boot: flush anything left in localStorage from a previous session — for
@@ -118,9 +147,13 @@ export async function flushPending() {
                           { features: buffered.features, groups: buffered.groups });
       localStorage.removeItem(k);
     } catch (err) {
-      // A 404 means the project or paper is gone for good — retrying it every
-      // boot would be a buffer that never drains.
-      if (err && err.status === 404) { try { localStorage.removeItem(k); } catch (_) {} }
+      // A 404 means the project or paper is gone for good, a 403 that the
+      // paper is no longer ours to edit (reassigned, submitted, or we left the
+      // project) — retrying either every boot would be a buffer that never drains.
+      if (err && (err.status === 404 || err.status === 403)) {
+        try { localStorage.removeItem(k); } catch (_) {}
+        if (err.status === 403) toast(`Unsaved edits from an earlier session were discarded: ${err.message}`);
+      }
       /* otherwise leave it; will retry next boot */
     }
   }
