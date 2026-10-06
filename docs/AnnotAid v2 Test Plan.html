@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AnnotAid v2 MVP Test Run</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18222d;
+      --muted: #64717d;
+      --line: #dbe1e5;
+      --paper: #ffffff;
+      --wash: #f5f7f7;
+      --brand: #176c66;
+      --brand-soft: #e4f2f0;
+      --pass: #177447;
+      --pass-soft: #e6f5ed;
+      --fail: #b5322e;
+      --fail-soft: #fbeae8;
+      --blocked: #926211;
+      --blocked-soft: #fff3d6;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--wash);
+      color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .94);
+      backdrop-filter: blur(10px);
+    }
+
+    .topbar-inner, main {
+      width: min(980px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar-inner {
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand { font-weight: 720; letter-spacing: -.01em; }
+    .saved { color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+    main { padding: 36px 0 72px; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    h1 { margin: 0 0 8px; font-size: clamp(29px, 5vw, 44px); line-height: 1.08; letter-spacing: -.035em; }
+    h2 { margin: 0; font-size: 20px; letter-spacing: -.015em; }
+    h3 { margin: 0; font-size: 16px; }
+    p { margin: 0; }
+
+    .lede { max-width: 650px; color: var(--muted); font-size: 16px; }
+
+    .score {
+      width: 156px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+    }
+
+    .score strong { display: block; font-size: 25px; line-height: 1.1; }
+    .score span { color: var(--muted); font-size: 12px; }
+
+    .progress {
+      height: 7px;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7ebed;
+    }
+
+    .progress > i {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--brand);
+      transition: width .2s ease;
+    }
+
+    .panel, .test-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: 0 1px 2px rgba(24, 34, 45, .03);
+    }
+
+    .setup { padding: 18px; margin-bottom: 18px; }
+    .setup-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .setup-head p { color: var(--muted); font-size: 13px; }
+
+    .setup-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+
+    label.field { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
+
+    input, textarea {
+      width: 100%;
+      border: 1px solid #cbd3d8;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      outline: none;
+    }
+
+    input { height: 39px; padding: 0 10px; }
+    textarea { min-height: 92px; padding: 10px 11px; resize: vertical; line-height: 1.45; }
+    input:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+
+    .journey-note {
+      margin-bottom: 18px;
+      padding: 13px 15px;
+      border-left: 4px solid var(--brand);
+      border-radius: 4px 9px 9px 4px;
+      background: var(--brand-soft);
+      color: #234c49;
+    }
+
+    .journey-note strong { font-weight: 750; }
+    .journey-note span { color: #4c6664; }
+
+    .tests { display: grid; gap: 12px; }
+
+    .test-card { overflow: hidden; }
+    .test-card[data-status="pass"] { border-color: #acd7bf; }
+    .test-card[data-status="fail"] { border-color: #ebb6b2; }
+    .test-card[data-status="blocked"] { border-color: #e8ca83; }
+
+    .test-head {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 16px 18px;
+    }
+
+    .test-num {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--wash);
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .test-title p { margin-top: 2px; color: var(--muted); font-size: 13px; }
+
+    .status-group { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+
+    .status-btn, .action-btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #46525d;
+      font-weight: 680;
+    }
+
+    .status-btn { padding: 6px 9px; font-size: 12px; }
+    .status-btn:hover, .action-btn:hover { border-color: #aeb8bf; background: #f8f9f9; }
+    .status-btn[aria-pressed="true"][data-value="pass"] { border-color: var(--pass); background: var(--pass-soft); color: var(--pass); }
+    .status-btn[aria-pressed="true"][data-value="fail"] { border-color: var(--fail); background: var(--fail-soft); color: var(--fail); }
+    .status-btn[aria-pressed="true"][data-value="blocked"] { border-color: var(--blocked); background: var(--blocked-soft); color: var(--blocked); }
+
+    .test-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, .8fr);
+      gap: 24px;
+      padding: 0 18px 18px 72px;
+    }
+
+    .steps { margin: 0; padding-left: 20px; }
+    .steps li { margin: 0 0 7px; padding-left: 3px; }
+    .steps li:last-child { margin-bottom: 0; }
+    .expect { color: var(--muted); }
+    .expect::before { content: "Expected: "; color: var(--ink); font-weight: 700; }
+
+    .notes label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .notes textarea { min-height: 116px; }
+
+    .overall { margin-top: 18px; padding: 18px; }
+    .overall h2 { margin-bottom: 4px; }
+    .overall p { margin-bottom: 10px; color: var(--muted); font-size: 13px; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .action-btn { padding: 9px 12px; }
+    .action-btn.primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .action-btn.primary:hover { background: #115b56; }
+    .action-btn.danger { margin-left: auto; color: var(--fail); }
+
+    .handoff {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .handoff code { color: var(--ink); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 20;
+      padding: 10px 13px;
+      border-radius: 8px;
+      background: #26333d;
+      color: #fff;
+      font-size: 13px;
+      box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: .18s ease;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 760px) {
+      .hero { grid-template-columns: 1fr; }
+      .score { width: 100%; }
+      .setup-grid, .test-body { grid-template-columns: 1fr; }
+      .test-head { grid-template-columns: 38px 1fr; }
+      .status-group { grid-column: 1 / -1; justify-content: flex-start; padding-left: 50px; }
+      .test-body { padding: 0 16px 16px; }
+      .action-btn.danger { margin-left: 0; }
+    }
+
+    @media print {
+      .topbar, .actions, .toast { display: none !important; }
+      body { background: #fff; }
+      main { width: 100%; padding: 0; }
+      .test-card, .panel { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">AnnotAid v2 · MVP test run</div>
+      <div class="saved" id="saveState">Saved 10:46</div>
+    </div>
+  </div>
+
+  <main>
+    <section class="hero">
+      <div>
+        <h1>Can a small team do the real job?</h1>
+        <p class="lede">One focused journey from account approval to a submitted, exportable paper. Mark each checkpoint and write only what surprised you or failed.</p>
+      </div>
+      <div class="score" aria-live="polite">
+        <strong id="scoreText">6 / 11</strong>
+        <span id="scoreDetail">6 passed</span>
+        <div class="progress"><i id="progressBar" style="width: 54.5455%;"></i></div>
+      </div>
+    </section>
+
+    <section class="panel setup">
+      <div class="setup-head">
+        <h2>Run details</h2>
+        <p>Use one manager and one curator account.</p>
+      </div>
+      <div class="setup-grid">
+        <label class="field">App URL<input id="appUrl" placeholder="https://annotaid.tibly.net" value=""></label>
+        <label class="field">Tester<input id="tester" placeholder="Your name" value=""></label>
+        <label class="field">Build / date<input id="build" placeholder="version, commit, or date" value=""></label>
+      </div>
+    </section>
+
+    <div class="journey-note"><strong>Keep it simple:</strong> <span>use one small project and 1–3 papers. If a checkpoint fails, record what you clicked, what happened, and any visible error. Then continue where possible.</span></div>
+
+    <section class="tests" id="tests">
+      <article class="test-card" data-id="T1" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">01</div>
+          <div class="test-title"><h3>Access and approve a curator</h3><p>Anonymous access is closed; a real user can get in.</p></div>
+          <div class="status-group" aria-label="T1 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>Open the app signed out. Confirm it sends you to sign in.</li>
+            <li>Request an account for the curator. Try signing in before approval.</li>
+            <li>As superadmin, approve the request; then sign in as the curator.</li>
+            <li class="expect">Pending users are refused; approved users reach the home page.</li>
+          </ol>
+          <div class="notes"><label for="notes-T1">Finding / error</label><textarea id="notes-T1" placeholder="Leave blank when everything is unsurprising."></textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T2" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">02</div>
+          <div class="test-title"><h3>Create a project and add the curator</h3><p>The team can reach the same workspace, and outsiders cannot.</p></div>
+          <div class="status-group" aria-label="T2 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As a manager, create a small project from a config file or from scratch.</li>
+            <li>Open <strong>Team</strong>, make an invite link, and use it as the curator.</li>
+            <li>Confirm both users see the project and the curator cannot see manager-only controls.</li>
+            <li class="expect">The curator joins once and can open the project without managing it.</li>
+          </ol>
+          <div class="notes"><label for="notes-T2">Finding / error</label><textarea id="notes-T2" placeholder="Example: invite opened, but Join returned 500…">when in a project view (p/&lt;id&gt;) account and signout options should not be available to any user tole</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T3" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">03</div>
+          <div class="test-title"><h3>Add papers</h3><p>The manager can build a usable work pool.</p></div>
+          <div class="status-group" aria-label="T3 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As manager, add 1–3 papers by PMID. Include a duplicate if convenient.</li>
+            <li>Close the add-papers window while the job runs, then check <strong>Jobs</strong>.</li>
+            <li>If a PMID has no downloadable PDF, try its offered PDF-upload route.</li>
+            <li class="expect">Every PMID has a clear outcome; added papers appear in the pool and duplicates are harmless.</li>
+          </ol>
+          <div class="notes"><label for="notes-T3">Finding / error</label><textarea id="notes-T3" placeholder="Include the PMID and job outcome when relevant.">As PM, on the homepage where there are projects card, in the menu add an option to manage team there itself.</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T4" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">04</div>
+          <div class="test-title"><h3>Assign and claim work</h3><p>A paper has one clear owner.</p></div>
+          <div class="status-group" aria-label="T4 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As curator, claim a paper from <strong>Pool</strong>.</li>
+            <li>Confirm it moves to <strong>My papers</strong> and becomes editable.</li>
+            <li>As the manager or another user, open that paper and confirm it is read-only unless reassigned.</li>
+            <li class="expect">Only the assignee can change the paper; assignment is obvious to everyone.</li>
+          </ol>
+          <div class="notes"><label for="notes-T4">Finding / error</label><textarea id="notes-T4" placeholder="Note the account, paper, and unexpected control/state.">can hide the count in the navbar (x/x). the option to exclude should not exis</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T5" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">05</div>
+          <div class="test-title"><h3>Extract and curate values</h3><p>The core research workflow works end to end.</p></div>
+          <div class="status-group" aria-label="T5 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As manager, start AI extraction for a paper and leave the page while it runs.</li>
+            <li>Return through <strong>Jobs</strong>; open the completed paper as its curator.</li>
+            <li>Edit one extracted value, add or change one group item, and confirm values.</li>
+            <li>Reload the page and check the edits, confirmation, evidence, and editor name remain.</li>
+            <li class="expect">The job survives navigation and the curator's saved decisions survive reload.</li>
+          </ol>
+          <div class="notes"><label for="notes-T5">Finding / error</label><textarea id="notes-T5" placeholder="Name the paper, model, and field/group if something breaks.">minor issue with variants. i cannot specify multiple variants after the first time the pmid is added when doing extraction for all. only the first variant is saved and the rest is discarded after i enter the variant id for one pmid and click next pmid. we need to make this part more intuitive. let's discuss. otherwise, steps specified for this phase run successfully</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T6" data-status="pass">
+        <div class="test-head">
+          <div class="test-num">06</div>
+          <div class="test-title"><h3>Finish and reopen a paper</h3><p>The workflow closes safely and mistakes are recoverable.</p></div>
+          <div class="status-group" aria-label="T6 result">
+            <button class="status-btn" data-value="pass" aria-pressed="true">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As curator, submit the paper and confirm it becomes read-only.</li>
+            <li>As manager, reopen it and confirm the action appears in its history.</li>
+            <li class="expect">Finished work is locked; a manager can reopen it without losing curated data.</li>
+          </ol>
+          <div class="notes"><label for="notes-T6">Finding / error</label><textarea id="notes-T6" placeholder="Describe the status before and after the action.">exlcuded and unextractable should not be options on this platform</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T7" data-status="untested">
+        <div class="test-head">
+          <div class="test-num">07</div>
+          <div class="test-title"><h3>Export and recover</h3><p>The useful output and a recoverable copy both exist.</p></div>
+          <div class="status-group" aria-label="T7 result">
+            <button class="status-btn" data-value="pass" aria-pressed="false">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As manager, export CSV and spot-check the curated paper.</li>
+            <li>As superadmin, open <strong>Admin → System</strong> and run <strong>Back up now</strong>.</li>
+            <li>Confirm the backup time updates and no new server error appears.</li>
+            <li class="expect">Exports contain the work and the app reports a successful database backup.</li>
+          </ol>
+          <div class="notes"><label for="notes-T7">Finding / error</label><textarea id="notes-T7" placeholder="Note missing columns/data or the exact backup error.">audit.json is no longer relevant since it's now stored in the db. remove it</textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T8" data-status="untested">
+        <div class="test-head">
+          <div class="test-num">08</div>
+          <div class="test-title"><h3>Retest the simplified project setup</h3><p>Managers define research fields; admins define AI infrastructure.</p></div>
+          <div class="status-group" aria-label="T8 result">
+            <button class="status-btn" data-value="pass" aria-pressed="false">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>As superadmin, set the model, default model, and PDF processing under <strong>Admin → System</strong>.</li>
+            <li>As manager, create a project: define paper-level features first, then one optional repeating group, then review the prompt.</li>
+            <li>Confirm project creation and shared config files do not ask the manager or curator to choose models or OCR.</li>
+            <li class="expect">Research schema belongs to the project; operational AI settings exist once, under superadmin.</li>
+          </ol>
+          <div class="notes"><label for="notes-T8">Finding / error</label><textarea id="notes-T8" placeholder="Note any setting that appears to the wrong role or in the wrong place."></textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T9" data-status="untested">
+        <div class="test-head">
+          <div class="test-num">09</div>
+          <div class="test-title"><h3>Retest two-pass variant extraction</h3><p>AI discovers row IDs; a curator controls what pass 2 curates.</p></div>
+          <div class="status-group" aria-label="T9 result">
+            <button class="status-btn" data-value="pass" aria-pressed="false">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>Use a project with one repeating group and add a paper containing several identifiers (ideally mixed dbSNP, EVA, HGVS, or haplotype forms).</li>
+            <li>As manager, launch <strong>Pass 1 · Identify repeat-group entries</strong> immediately after loading the paper.</li>
+            <li>Confirm extraction pauses: no curated values exist yet, and the assigned curator sees all proposed IDs with short evidence quotes.</li>
+            <li>As curator, correct/add/remove IDs, approve the list, and confirm pass 2 starts. Reload and verify every approved ID has one row.</li>
+            <li class="expect">Multiple IDs survive; pass 2 cannot start before assignee review and never invents extra rows.</li>
+          </ol>
+          <div class="notes"><label for="notes-T9">Finding / error</label><textarea id="notes-T9" placeholder="Include the paper, missing/extra ID, and the point where it disappeared."></textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T10" data-status="untested">
+        <div class="test-head">
+          <div class="test-num">10</div>
+          <div class="test-title"><h3>Retest abstract-only evidence</h3><p>Abstract fallback remains a usable curation surface.</p></div>
+          <div class="status-group" aria-label="T10 result">
+            <button class="status-btn" data-value="pass" aria-pressed="false">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>Enable abstract extraction for the project and import a PMID with no available full-text PDF but a PubMed abstract.</li>
+            <li>Run the appropriate AI pass and open a value that has an evidence quote.</li>
+            <li>Use previous/next evidence and click the value; also select abstract text for a manual evidence edit.</li>
+            <li class="expect">The abstract is readable in the viewer, matching text highlights, navigation says “found,” and selection works.</li>
+          </ol>
+          <div class="notes"><label for="notes-T10">Finding / error</label><textarea id="notes-T10" placeholder="Paste the evidence quote and describe where highlighting/navigation failed."></textarea></div>
+        </div>
+      </article>
+
+      <article class="test-card" data-id="T11" data-status="untested">
+        <div class="test-head">
+          <div class="test-num">11</div>
+          <div class="test-title"><h3>Retest the reduced MVP interface</h3><p>The removed choices stay removed and the shortcuts are where expected.</p></div>
+          <div class="status-group" aria-label="T11 result">
+            <button class="status-btn" data-value="pass" aria-pressed="false">Pass</button><button class="status-btn" data-value="fail" aria-pressed="false">Fail</button><button class="status-btn" data-value="blocked" aria-pressed="false">Blocked</button>
+          </div>
+        </div>
+        <div class="test-body">
+          <ol class="steps">
+            <li>On a project card, confirm the manager has <strong>Manage team</strong>.</li>
+            <li>Inside a project, confirm there is no account/sign-out menu, paper x/x count, model/OCR picker, Exclude, or Unextractable.</li>
+            <li>Confirm the only project export is CSV and the database backup remains in <strong>Admin → System</strong>.</li>
+            <li class="expect">The curator view is focused on claiming, reviewing, curating, and submitting work.</li>
+          </ol>
+          <div class="notes"><label for="notes-T11">Finding / error</label><textarea id="notes-T11" placeholder="Name any removed control that remains or any replacement that is unclear."></textarea></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel overall">
+      <h2>Overall notes</h2>
+      <p>Capture usability problems, rough edges, or anything that does not belong to one checkpoint.</p>
+      <textarea id="overallNotes" placeholder="What felt confusing, slow, unsafe, or unfinished?" value="hide the ocr options in the extraction panel (pdf text, mistral, ...) use the default value only. i want the ui to be easy to understand in general - for the curator first and manager next. also hide model selection to curator. only the admin should be able to set this + a default as well. the admin can add more models somewhere in the ui.">hide the ocr options in the extraction panel (pdf text, mistral, ...) use the default value only. i want the ui to be easy to understand in general - for the curator first and manager next. also hide model selection to curator. only the admin should be able to set this + a default as well. the admin can add more models somewhere in the ui.</textarea>
+      <div class="actions">
+        <button class="action-btn primary" id="downloadMd">Download feedback (.md)</button>
+        <button class="action-btn" id="copyMd">Copy feedback</button>
+        <button class="action-btn" id="saveHtml">Save filled checklist (.html)</button>
+        <button class="action-btn danger" id="reset">Reset</button>
+      </div>
+      <p class="handoff"><strong>Handoff to Codex:</strong> click <em>Save filled checklist</em>, save it over this file (or anywhere in the repo), then tell me to read it. I will use the stable IDs <code>T1</code>–<code>T11</code> to trace each finding into the code.</p>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script id="embedded-state" type="application/json">{"updatedAt":"2026-10-05T06:47:42.397Z","fields":{"appUrl":"","tester":"","build":"","overallNotes":"hide the ocr options in the extraction panel (pdf text, mistral, ...) use the default value only. i want the ui to be easy to understand in general - for the curator first and manager next. also hide model selection to curator. only the admin should be able to set this + a default as well. the admin can add more models somewhere in the ui."},"tests":{"T1":{"status":"pass","notes":""},"T2":{"status":"pass","notes":"when in a project view (p/\u003cid>) account and signout options should not be available to any user tole"},"T3":{"status":"pass","notes":"As PM, on the homepage where there are projects card, in the menu add an option to manage team there itself."},"T4":{"status":"pass","notes":"can hide the count in the navbar (x/x). the option to exclude should not exis"},"T5":{"status":"pass","notes":"minor issue with variants. i cannot specify multiple variants after the first time the pmid is added when doing extraction for all. only the first variant is saved and the rest is discarded after i enter the variant id for one pmid and click next pmid. we need to make this part more intuitive. let's discuss. otherwise, steps specified for this phase run successfully"},"T6":{"status":"pass","notes":"exlcuded and unextractable should not be options on this platform"},"T7":{"status":"untested","notes":"audit.json is no longer relevant since it's now stored in the db. remove it"}}}</script>
+  <script>
+    (() => {
+      const STORAGE_KEY = "annotaid-v2-mvp-test-v1";
+      const ids = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11"];
+      const fields = ["appUrl", "tester", "build", "overallNotes"];
+      const cards = Object.fromEntries(ids.map(id => [id, document.querySelector(`[data-id="${id}"]`)]));
+      let state = { updatedAt: null, fields: {}, tests: Object.fromEntries(ids.map(id => [id, { status: "untested", notes: "" }])) };
+      let toastTimer;
+
+      function mergeState(candidate) {
+        if (!candidate || typeof candidate !== "object") return;
+        state.updatedAt = candidate.updatedAt || state.updatedAt;
+        state.fields = { ...state.fields, ...(candidate.fields || {}) };
+        for (const id of ids) {
+          if (candidate.tests && candidate.tests[id]) state.tests[id] = { ...state.tests[id], ...candidate.tests[id] };
+        }
+      }
+
+      function initialState() {
+        try { mergeState(JSON.parse(document.getElementById("embedded-state").textContent || "{}")); } catch (_) {}
+        try {
+          const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+          if (local && (!state.updatedAt || String(local.updatedAt) >= String(state.updatedAt))) mergeState(local);
+        } catch (_) {}
+      }
+
+      function collect() {
+        for (const id of fields) state.fields[id] = document.getElementById(id).value.trim();
+        for (const id of ids) state.tests[id].notes = document.getElementById(`notes-${id}`).value.trim();
+        state.updatedAt = new Date().toISOString();
+        return state;
+      }
+
+      function persist() {
+        collect();
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+        renderSummary();
+        document.getElementById("saveState").textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      }
+
+      function hydrate() {
+        for (const id of fields) document.getElementById(id).value = state.fields[id] || "";
+        for (const id of ids) {
+          document.getElementById(`notes-${id}`).value = state.tests[id].notes || "";
+          setStatus(id, state.tests[id].status || "untested", false);
+        }
+        renderSummary();
+        if (state.updatedAt) document.getElementById("saveState").textContent = `Restored ${new Date(state.updatedAt).toLocaleString()}`;
+      }
+
+      function setStatus(id, value, save = true) {
+        state.tests[id].status = value;
+        cards[id].dataset.status = value;
+        cards[id].querySelectorAll(".status-btn").forEach(btn => btn.setAttribute("aria-pressed", String(btn.dataset.value === value)));
+        if (save) persist();
+      }
+
+      function renderSummary() {
+        const done = ids.filter(id => state.tests[id].status !== "untested").length;
+        const pass = ids.filter(id => state.tests[id].status === "pass").length;
+        const problems = ids.filter(id => ["fail", "blocked"].includes(state.tests[id].status)).length;
+        document.getElementById("scoreText").textContent = `${done} / ${ids.length}`;
+        document.getElementById("scoreDetail").textContent = done ? `${pass} passed${problems ? ` · ${problems} need attention` : ""}` : "checkpoints complete";
+        document.getElementById("progressBar").style.width = `${done / ids.length * 100}%`;
+      }
+
+      function markdown() {
+        collect();
+        const lines = [
+          "# AnnotAid v2 MVP test feedback",
+          "",
+          `- App: ${state.fields.appUrl || "not recorded"}`,
+          `- Tester: ${state.fields.tester || "not recorded"}`,
+          `- Build/date: ${state.fields.build || "not recorded"}`,
+          `- Saved: ${state.updatedAt}`,
+          "",
+          "## Results",
+          ""
+        ];
+        for (const id of ids) {
+          const card = cards[id];
+          const title = card.querySelector("h3").textContent;
+          const result = state.tests[id];
+          lines.push(`### ${id} — ${title}: ${result.status.toUpperCase()}`, "", result.notes || "No finding recorded.", "");
+        }
+        lines.push("## Overall notes", "", state.fields.overallNotes || "None recorded.", "");
+        return lines.join("\n");
+      }
+
+      function download(name, text, type) {
+        const url = URL.createObjectURL(new Blob([text], { type }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function filledHtml() {
+        collect();
+        const clone = document.documentElement.cloneNode(true);
+        const safeJson = JSON.stringify(state).replace(/</g, "\\u003c");
+        clone.querySelector("#embedded-state").textContent = safeJson;
+        for (const id of fields) clone.querySelector(`#${id}`).setAttribute("value", state.fields[id] || "");
+        clone.querySelector("#overallNotes").textContent = state.fields.overallNotes || "";
+        for (const id of ids) clone.querySelector(`#notes-${id}`).textContent = state.tests[id].notes || "";
+        return "<!doctype html>\n" + clone.outerHTML;
+      }
+
+      function notify(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+      }
+
+      document.querySelectorAll(".status-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const id = btn.closest(".test-card").dataset.id;
+          const next = state.tests[id].status === btn.dataset.value ? "untested" : btn.dataset.value;
+          setStatus(id, next);
+        });
+      });
+
+      document.querySelectorAll("input, textarea").forEach(control => {
+        control.addEventListener("input", () => {
+          document.getElementById("saveState").textContent = "Saving…";
+          clearTimeout(control._saveTimer);
+          control._saveTimer = setTimeout(persist, 300);
+        });
+      });
+
+      document.getElementById("downloadMd").addEventListener("click", () => {
+        download("annotaid-v2-mvp-feedback.md", markdown(), "text/markdown;charset=utf-8");
+        notify("Feedback downloaded");
+      });
+
+      document.getElementById("copyMd").addEventListener("click", async () => {
+        const text = markdown();
+        try { await navigator.clipboard.writeText(text); notify("Feedback copied"); }
+        catch (_) { download("annotaid-v2-mvp-feedback.md", text, "text/markdown;charset=utf-8"); notify("Clipboard unavailable — downloaded instead"); }
+      });
+
+      document.getElementById("saveHtml").addEventListener("click", async () => {
+        const content = filledHtml();
+        if ("showSaveFilePicker" in window) {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: "AnnotAid v2 Test Plan.html",
+              types: [{ description: "HTML file", accept: { "text/html": [".html"] } }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            notify("Filled checklist saved");
+            return;
+          } catch (error) {
+            if (error && error.name === "AbortError") return;
+          }
+        }
+        download("AnnotAid v2 Test Plan - filled.html", content, "text/html;charset=utf-8");
+        notify("Filled checklist downloaded");
+      });
+
+      document.getElementById("reset").addEventListener("click", () => {
+        if (!confirm("Clear every result and note in this checklist?")) return;
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        state = { updatedAt: null, fields: {}, tests: Object.fromEntries(ids.map(id => [id, { status: "untested", notes: "" }])) };
+        hydrate();
+        document.getElementById("saveState").textContent = "Reset";
+      });
+
+      initialState();
+      hydrate();
+    })();
+  </script>
+
+
+</body></html>

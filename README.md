@@ -9,9 +9,9 @@ v2 runs on one server for a whole team: people sign in, project managers staff p
 out papers, curators work through their own queue, and every edit records who made it. Deployment
 is in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md); the HTTP API in [`docs/api-v2.md`](docs/api-v2.md).
 
-Work is organised into **projects**. A project owns its own feature set (plus models, prompts and
-CSV export mapping) and its own papers, so several curation efforts can run side by side and the
-same paper can be curated independently in more than one of them.
+Work is organised into **projects**. A project owns its feature set, prompt, CSV mapping and papers.
+AI models and PDF processing are server-wide settings managed by a superadmin, so provider choices
+never complicate the curator workflow.
 
 Features come in two shapes. A plain feature is one value per paper. A **repeating group** is a set
 of fields recorded once per entry — one per genetic variant, say — so a single paper yields one
@@ -57,10 +57,10 @@ nginx reports HTTPS), so local sign-in just works.
 
 | Role | Can |
 |---|---|
-| **Superadmin** (account) | everything, in every project; approve sign-ups, create / deactivate accounts, reset passwords, archive projects, add project managers, back up the database |
+| **Superadmin** (account) | everything, in every project; approve sign-ups, set the server's AI models and PDF processing, archive projects, add project managers, back up the database |
 | **Manager** (account) | create projects — and becomes the manager of each one they create |
 | **Project manager** | edit the project's schema, add papers (background import job), run AI extraction (background job), assign and reassign papers, reopen finished ones, manage the team and invite links, export |
-| **Curator** | claim papers from the pool, curate the papers assigned to them, submit them or mark them excluded / unextractable with a reason |
+| **Curator** | claim papers, review AI-discovered repeat-group IDs, run pass 2 for assigned papers, curate values and submit |
 
 Only the curator a paper is assigned to can change its values, and only while it is in progress.
 Every edit, confirmation and status change records who did it and when. The server checks all of
@@ -68,13 +68,13 @@ this on every request; the interface only hides what you can't do.
 
 ## Workflow
 
-0. **Pick or create a project.** Creation is a three-step stepper — Details → Features → Review.
+0. **Pick or create a project.** Creation is a three-step stepper — Details → Schema → Review.
 
    - **Details** — name, description, and whether papers with no PubMed ID are allowed (off by
      default). The name and description are not decoration: together with the feature descriptions
      they compose the prompt sent to the model, so "Prefer the replication p-value where both are
      reported" belongs in the description.
-   - **Features** — a visual editor for the feature set. Start from nothing, from the server's
+   - **Schema** — define paper-level features first, then one optional repeating group. Start from the server's
      starter set, or by importing a configuration document another project manager shared. Every
      keystroke is validated by the server (`POST /api/validate-config`) rather than by a second copy
      of the rules in JavaScript, so the editor can never accept a config the server refuses.
@@ -120,22 +120,22 @@ this on every request; the interface only hides what you can't do.
    with a DOI) is a real answer rather than a way of skipping the question, and it unblocks curation
    exactly as a confirmed PMID does. A paper is listed by its PMID, else its DOI, else its filename.
    Only a paper nobody has decided about yet is flagged and blocked.
-3. **Extract** — the last step of the stepper. Pick model(s) and a PDF parse engine (`pdf-text`
-   free, `mistral-ocr` paid, `native`); the settings apply to every paper this run added, and each
-   paper reports its own success/failure row. The backend calls OpenRouter, validates/repairs every
-   reply against the declared feature types, and stores one run per (paper × model). Extraction is
-   only reachable here — the Extraction pane keeps just the switcher for which model's output you
-   are reading.
+3. **Extract** — the server's default model and PDF-processing engine are used automatically. With
+   no repeating group, the manager starts full AI curation directly. With a group, extraction has
+   two deliberate passes:
 
-   One call returns the whole nested document, groups included. Entries beyond a group's `maxItems`
-   are dropped and the run is recorded as *repaired* rather than clean.
+   - **Pass 1:** a manager asks AI to identify reported entries. dbSNP, EVA, HGVS, haplotype and
+     other identifier formats are kept verbatim with a short evidence quote.
+   - **Review pause:** the assigned curator corrects, adds or removes IDs and approves the list.
+   - **Pass 2:** that curator starts full curation. AI fills one row per approved entry and cannot
+     invent, omit or reorder rows.
 4. **Verify** — per feature: the AI value is prefilled and editable; the original `aiValue` is kept
    immutably beside it (unchanged = "human agrees with AI", edited = a correction). Click a value's
    evidence quote to scroll+highlight it in the PDF. A failed match is declared ("not found in PDF")
    — it is never silently shown as no-evidence. In **Card view**, you can also select text directly
    in the PDF and click the floating button to set it as that feature's evidence.
 
-   A **repeating group** shows one collapsed line per entry, titled by its identifier. Open one and
+   A **repeating group** shows one collapsed line per reviewed entry. Open one and
    its fields behave exactly like paper-level values. You can add an entry the AI missed, and reject
    one it invented. The audit pair works at this level too: an AI entry you reject is kept as a
    record (it is a false positive) and can be restored; an entry you added yourself is marked as
@@ -144,13 +144,8 @@ this on every request; the interface only hides what you can't do.
    an unexamined one.
 5. **Confirm** each value with the tick. Work autosaves to disk (debounced); a browser refresh never
    loses confirmed work.
-6. **Download** at any point:
-   - **CSV** — columns/format defined by the project's config (`export.csv`); paste rows straight
-     into the global results sheet.
-   - **Audit JSON** — every run with `aiValue` beside the curator's final `value`, plus the fully
-     composed prompt that produced it, for benchmarking.
-
-   Both are scoped to the open project.
+6. **Download CSV** — columns/format are defined by the project (`export.csv`) and scoped to that
+   project. The database is the audit/recovery record; superadmins back it up under Admin → System.
 
 **Import** existing model-output JSONs (rich `{field:{value,evidence}}` files, or nested
 `{pmid:{curator:{...}}}` files) to populate the tool without re-paying for extraction. Import
@@ -158,7 +153,7 @@ attaches to a paper whose PMID is already confirmed (upload the PDF first).
 
 ## Configuration
 
-Config-driven; no code changes to add/remove features or models. Secrets never live here.
+Config-driven; no code changes to add/remove project features. Secrets never live here.
 
 Each project stores its own copy of this document, and `GET /api/projects/<id>` returns it as a
 self-contained, shareable file (`annotaidProject: 1`, plus `name` and `description`). Prompt text is
@@ -177,16 +172,13 @@ from.
   field), `type` (`string | boolean | number | enum | array<string> | array<number> | group`),
   `enumValues` (if enum), `nullable`, optional `label`, `description` (used in the prompt).
 - **a group** (`"type": "group"`) additionally carries its own `features` list, an optional `min`
-  and `maxItems` (default 50), and needs **at least one child marked `"identifier": true`** — that
-  is what names an entry in the curation list, and without it a curator cannot tell two entries
-  apart. Several identifiers means "any one of these", which is how a variant is keyed by rsID *or*
-  by a positional id. Nesting stops at two levels: a group inside a group is a config error.
+  and `maxItems` (default 50). Its row identity is discovered and reviewed in pass 1, independently
+  of the fields pass 2 curates. Nesting stops at two levels: a group inside a group is a config error.
   The same name may appear at both levels — a study-level `p_value` and a per-variant `p_value` are
   different facts — and dotted paths (`variants.p_value`) tell them apart.
 - **settings** — `allowPapersWithoutPmid` (default `false`).
-- **models** — OpenRouter `slug`, optional `label`, `supportsStructuredOutput` (send `response_format`
-  only for models that honour it; others fall back to prompt-only + repair). **The default slugs are
-  placeholders — set them to models you actually have on OpenRouter before extracting.**
+- **AI settings** — superadmins manage OpenRouter slugs, structured-output support, the default model,
+  and PDF processing once under Admin → System. These are not part of a shared project document.
 - **prompts** — `label` + `file` (or inline `text`; a stored project config must inline it). The
   project's name and description, the Fields section and the JSON shape are all appended
   automatically. A run records both `promptId` (the template) and `promptHash` (the prompt actually
@@ -207,7 +199,7 @@ server/               stdlib backend (see module docstrings)
   app.py              HTTP server + the access gate every request passes through
   auth.py             accounts, scrypt passwords, sessions, throttling, superadmin bootstrap
   membership.py       project roles, team, invite links
-  workflow.py         claim / assign / submit / exclude / reopen + the edit lock
+  workflow.py         claim / assign / submit / reopen + the edit lock
   jobs.py             background job runner (PMID import, AI extraction)
   backup.py           nightly online database backup
   handlers.py         project routes;  auth_handlers.py  login / sign-up / admin routes
@@ -226,7 +218,7 @@ tests/                python -m annotaid.tests.test_store          (storage inte
                       python -m annotaid.tests.test_features       (schema rules + coercion)
                       python -m annotaid.tests.test_prompt         (prompt composition + identity)
                       python -m annotaid.tests.test_feature_sheet  (spreadsheet round-trip)
-                      python -m annotaid.tests.test_group_items    (curator-declared group row identity)
+                      python -m annotaid.tests.test_group_items    (two-pass group identity)
                       python -m annotaid.tests.test_http           (the real server end to end: every
                                                                     route's access rule, sessions,
                                                                     CSRF, roles, workflow, jobs, admin)
@@ -250,8 +242,6 @@ from the `visual_curator.html` / `visual_evaluator.html` prototypes.
   text, while highlighting uses pdf.js's embedded text layer, so matching is fuzzy (with
   dehyphenation) and can miss — especially on scanned/two-column papers. A miss is declared, not
   hidden; the quote is always shown.
-- **Multi-model reconciliation is deferred.** Each model tab is confirmed independently; collapsing
-  N models into one gold value is left to downstream tooling. Single-model papers show no tabs.
 - **Imports match on PMID**, so a paper recorded as having no PubMed ID cannot be an import target.
   The import formats are flat, so an imported run has no group entries.
 - **A model that returns nothing looks the same as a paper that contains nothing.** An all-absent
