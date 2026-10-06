@@ -1,9 +1,8 @@
-"""Curator-declared row identity for a project's one repeating group — never
-proposed by the AI. Run: python -m annotaid.tests.test_group_items
+"""Two-pass row identity for a project's one repeating group.
+Run: python -m annotaid.tests.test_group_items
 
-Covers: project_store storage (load/save_group_items), schema_builder's prompt
-rendering of the fixed declared list, and extraction's positional matching of
-the model's returned values against those declared rows.
+Covers: pass-1 discovery state/evidence, curator review, schema_builder's fixed
+reviewed list, and positional pass-2 matching.
 """
 from __future__ import annotations
 
@@ -70,13 +69,15 @@ def run_all(tmp):
     print("\nstorage: load/save_group_items")
     check("no items declared yet", store.load_group_items(paper["uid"]) == [])
     saved = store.save_group_items(paper["uid"], [
-        {"label": "rs1800544"}, {"label": "rs1800544"}, {"label": "HLA-B*15:02"},
+        {"label": "rs1800544", "evidence": "the rs1800544 variant"},
+        {"label": "rs1800544"}, {"label": "HLA-B*15:02"},
     ])
     check("three items saved, in order",
           [it["label"] for it in saved] == ["rs1800544", "rs1800544", "HLA-B*15:02"])
     check("each item got a distinct rowId even with a duplicate label",
           len({it["rowId"] for it in saved}) == 3)
     check("load_group_items agrees", store.load_group_items(paper["uid"]) == saved)
+    check("pass-1 evidence survives storage", saved[0]["evidence"] == "the rs1800544 variant")
     check("blank labels are dropped, not stored",
           store.save_group_items(paper["uid"], saved + [{"label": "   "}]) == saved)
 
@@ -102,10 +103,10 @@ def run_all(tmp):
           "do not include an identifier field" in prompt_text)
 
     fallback_prompt = schema_builder.build_prompt("Extract.", cfg.features)
-    check("no group_items -> falls back to the old open-ended phrasing (config-preview path)",
-          "Return one entry for every one the paper reports" in fallback_prompt)
+    check("no group_items -> explains the two-pass config-preview path",
+          "pass 1 identifies the entries" in fallback_prompt)
 
-    print("\nrun_extraction refuses to call the AI with no declared items")
+    print("\npass 2 requires review, not a non-empty list")
     empty_paper = papers_mod.store_upload(store, b"%PDF-1.4\n" + b"y" * 40, "1.pdf")
     empty_paper = papers_mod.confirm_pmid(store, empty_paper["uid"], "10000001", "manual")
     try:
@@ -113,8 +114,48 @@ def run_all(tmp):
                                    ["anthropic/claude-opus-4.7"], None, None)
         raise AssertionError("expected a ValueError, nothing raised")
     except ValueError as exc:
-        check('refuses when the group has no declared items, and says so',
-              "add at least one" in str(exc))
+        check("refuses an unreviewed list, and says so", "review" in str(exc))
+    store.save_group_items(empty_paper["uid"], [], reviewed=True, discovered=True)
+    reviewed = store.load_paper(empty_paper["uid"])
+    check("an approved empty list is valid", reviewed["groupItemsReviewed"] is True
+          and reviewed["groupItems"] == [])
+
+    print("\npass 1 discovers mixed identifier formats with review evidence")
+    discovery_paper = papers_mod.store_upload(
+        store, b"%PDF-1.4\n" + b"z" * 40, "2.pdf"
+    )
+    discovery_paper = papers_mod.confirm_pmid(
+        store, discovery_paper["uid"], "10000002", "manual"
+    )
+    captured = {}
+    original_call = extraction.openrouter.call
+    try:
+        def fake_call(payload, _key):
+            captured["payload"] = payload
+            return ('{"items": ['
+                    '{"label":"rs1800544","evidence":"variant rs1800544"},'
+                    '{"label":"EVA:eva123","evidence":"EVA:eva123 was reported"},'
+                    '{"label":"NM_000546.6:c.215C>G","evidence":"NM_000546.6:c.215C>G"}'
+                    ']}')
+        extraction.openrouter.call = fake_call
+        found = extraction.discover_group_items(
+            cfg, type("Secrets", (), {"openrouter_api_key": "test"})(), store,
+            discovery_paper, cfg.models[0], "pdf-text", "GWAS pilot",
+        )
+    finally:
+        extraction.openrouter.call = original_call
+    check("dbSNP, EVA and HGVS forms are retained verbatim",
+          [it["label"] for it in found] == [
+              "rs1800544", "EVA:eva123", "NM_000546.6:c.215C>G",
+          ])
+    check("discovery retains a review quote", found[1]["evidence"] == "EVA:eva123 was reported")
+    discovery_state = store.load_paper(discovery_paper["uid"])
+    check("pass 1 pauses as discovered but unreviewed",
+          discovery_state["groupItemsDiscovered"] is True
+          and discovery_state["groupItemsReviewed"] is False)
+    sent_prompt = captured["payload"]["messages"][0]["content"][0]["text"]
+    check("discovery prompt explicitly allows multiple identifier systems",
+          all(word in sent_prompt for word in ("dbSNP", "EVA", "HGVS")))
 
     print("\nextraction._groups_from_canonical: positional matching, never by identifier")
     group = feat.groups(cfg.features)[0]

@@ -8,7 +8,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
-from . import auth, membership, projects as projects_mod, responses
+from . import ai_settings, auth, membership, projects as projects_mod, responses
 from .net import client_ip, site_url  # noqa: F401 — site_url used by handlers
 from .access import allow_must_change, public, superadmin_only
 
@@ -257,12 +257,24 @@ def _system(ctx) -> dict:
         "errors": ctx.errors.list(),
         "users": counts,
         "jobs": jobs,
+        "aiSettings": ai_settings.get(ctx.db, ctx.template),
+        "parseEngines": list(ai_settings.PARSE_ENGINES),
     }
 
 
 @superadmin_only
 def h_admin_system(ctx, req, params, body):
     responses.send_json(req, _system(ctx))
+
+
+@superadmin_only
+def h_admin_ai_settings(ctx, req, params, body):
+    try:
+        data = _json(body)
+        saved = ai_settings.save(ctx.db, data, req.user["id"])
+    except (ValueError, ai_settings.AiSettingsError) as exc:
+        return responses.send_error_json(req, 400, str(exc))
+    responses.send_json(req, {"aiSettings": saved})
 
 
 @superadmin_only
@@ -323,5 +335,6 @@ def register(router):
     router.add("GET", "/api/admin/projects", h_admin_projects)
     router.add("POST", "/api/admin/projects/{pid}/{action}", h_admin_project_action)
     router.add("GET", "/api/admin/system", h_admin_system)
+    router.add("POST", "/api/admin/ai-settings", h_admin_ai_settings)
     router.add("POST", "/api/admin/backup", h_admin_backup)
     router.add("GET", "/api/admin/snapshot", h_admin_snapshot)

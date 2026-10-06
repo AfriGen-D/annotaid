@@ -78,14 +78,9 @@ def main():
     check("the group is announced by name", 'Repeating group "variants"' in gp)
     check("the group description is included",
           "One entry per genetic variant reported." in gp)
-    check("the row cap is stated to the model", "at most 12" in gp)
-    check("absence is given an explicit encoding",
-          '"present": false' in gp and "empty list" in gp)
-    # A row the model returns with no identifier cannot be named in the curation
-    # list, so the rule has to be spelled out rather than implied.
-    check("the identifier rule is spelled out",
-          "at least one of: rsid, variant_id" in gp)
-    check("nested field descriptions reach the prompt",
+    check("preview explains pass 1", "pass 1 identifies the entries" in gp)
+    check("preview explains review before pass 2", "after curator review" in gp)
+    check("nested field descriptions reach the pass-2 prompt preview",
           "The p-value for THIS variant's association." in gp)
     check("the nested JSON shape is shown",
           '"variants": {"present": true|false, "items": [' in gp)

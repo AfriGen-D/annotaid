@@ -39,20 +39,6 @@
       "maxItems": 50,
       "features": [
         {
-          "name": "rsid",
-          "type": "string",
-          "identifier": true,
-          "nullable": true,
-          "description": "The dbSNP rsID for this variant, e.g. rs1801133."
-        },
-        {
-          "name": "variant_id",
-          "type": "string",
-          "identifier": true,
-          "nullable": true,
-          "description": "A positional or HGVS identifier, used only when no rsID is given (e.g. chr1:11856378:G:A)."
-        },
-        {
           "name": "gene",
           "type": "string",
           "nullable": true,
@@ -157,12 +143,8 @@
           "source": "mixed_population"
         },
         {
-          "header": "rsid",
-          "source": "variants.rsid"
-        },
-        {
           "header": "variant_id",
-          "source": "variants.variant_id"
+          "source": "variants.$label"
         },
         {
           "header": "gene",

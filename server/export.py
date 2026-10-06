@@ -1,8 +1,7 @@
 """Export — available at any point (brief §7 decision).
 
-CSV: config-driven columns/format so the curator pastes rows straight into the
-     global sheet. Uses the curator's final `value` (not aiValue).
-Audit JSON: every run record with aiValue beside value, for benchmarking.
+CSV is config-driven so the manager can paste curated rows into the global
+sheet. It uses the curator's final `value`, not the original AI value.
 """
 from __future__ import annotations
 
@@ -53,8 +52,8 @@ def _cell(source, run, paper, row, feature_types, csvcfg) -> str:
         if row is None or row.get("_group") != group_name:
             return ""
         if field == "$label":
-            # The row's identity is curator-declared (server/project_store.
-            # load_group_items), not a feature — it lives on the paper, joined
+            # The row's identity is curator-reviewed (server/project_store.
+            # load_group_items), not a pass-2 feature — it lives on the paper, joined
             # in here by rowId, never inside run_features.
             items = {it["rowId"]: it["label"] for it in (paper or {}).get("groupItems") or []}
             return items.get(row.get("rowId"), "")
@@ -73,7 +72,7 @@ def _cell(source, run, paper, row, feature_types, csvcfg) -> str:
 def _default_columns(features) -> list:
     """Default column set when a project has no export.csv.columns of its own:
     every curatable path, groups expanded — plus, for the one group a project
-    may have, a leading column for its curator-declared row identity ($label),
+    may have, a leading column for its reviewed row identity ($label),
     since that identity is no longer necessarily one of the group's own
     features (server/project_store.load_group_items)."""
     out = []
@@ -151,21 +150,3 @@ def _scope_rows(run, group):
         if not r.get("deletedAt")
     ]
     return rows or [None]
-
-
-def export_audit_json(store: ProjectStore, config: Config, project=None) -> dict:
-    """Full audit artifact: papers + runs (aiValue beside value).
-
-    Runs carry promptText here — the fully composed prompt actually sent. Since
-    feature descriptions and the project description compose into it, editing
-    either one would otherwise make past runs unexplainable.
-    """
-    doc = {
-        "generatedAt": None,  # stamped by caller (Date.now unavailable in some contexts)
-        "features": [f.to_dict() for f in config.features],
-        "papers": store.list_papers(),
-        "runs": store.list_all_runs(with_prompt_text=True),
-    }
-    if project is not None:
-        doc["project"] = project.meta()
-    return doc

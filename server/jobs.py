@@ -29,9 +29,8 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ncbi, papers as papers_mod, util
+from . import ai_settings, extraction, ncbi, papers as papers_mod, util
 from .db import Db
-from .extraction import run_extraction
 
 KINDS = ("import", "extract")
 # Items of one job run this many at a time (decision 10). Extraction already
@@ -95,19 +94,44 @@ def run_extract_item(runner, proj, job, uid: str):
     paper = proj.store.load_paper_by_ident(uid)
     if paper is None:
         return "failed", "error", None, f"no paper {uid} in this project"
+    stage = params.get("stage") or ("discover" if proj.config.groups() else "curate")
+    settings = ai_settings.get(runner.db, proj.config)
+    model = ai_settings.model(settings)
+    if model is None:
+        return "failed", "error", None, "no default AI model is configured"
+    if stage == "discover":
+        try:
+            items = extraction.discover_group_items(
+                proj.config, runner.secrets, proj.store, paper, model,
+                settings["parseEngine"], context=proj.prompt_context(),
+            )
+        except ValueError as exc:
+            return "failed", "error", None, str(exc)
+        return "done", "identified", {"uid": paper["uid"], "items": len(items)}, None
+
+    if proj.config.groups() and (
+        paper.get("assigneeId") != job["created_by"]
+        or paper.get("curationStatus") != "in_progress"
+    ):
+        return (
+            "failed", "error", None,
+            "the paper is no longer assigned to the curator who started AI curation",
+        )
+
     before = {r["modelId"]: r.get("requestedAt") for r in proj.store.list_runs(paper["uid"])}
     try:
-        runs = run_extraction(
+        runs = extraction.run_extraction(
             proj.config, runner.secrets, proj.store, paper,
-            params.get("models") or [], params.get("promptId"), params.get("parseEngine"),
+            [model["slug"]], params.get("promptId"), settings["parseEngine"],
             force=bool(params.get("force")), context=proj.prompt_context(),
             requested_by=job["created_by"],
+            models_override=settings["models"],
         )
     except ValueError as exc:
         return "failed", "error", None, str(exc)
     fresh = [r for r in runs if before.get(r["modelId"]) != r.get("requestedAt")]
     failed = [r for r in fresh if r.get("status") == "failed"]
-    result = {"uid": paper["uid"], "models": [r["modelId"] for r in fresh]}
+    result = {"uid": paper["uid"], "models": [r["modelId"] for r in fresh], "stage": "curate"}
     if failed:
         errs = "; ".join(f"{r['modelId']}: {r.get('error') or 'failed'}" for r in failed)
         return "failed", "error", result, errs

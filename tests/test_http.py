@@ -9,7 +9,7 @@ throwaway data dir, and checks the hosted-release rules from the outside:
   * CSRF: a POST from another origin is refused
   * the permission matrix: superadmin / manager / curator / outsider (M2)
   * sign-up -> pending -> approval, join links (incl. sign-up through a link)
-  * workflow: claim, edit lock, submit, exclude, reopen (M3, M7, M9, M17)
+  * workflow: two-pass extraction, claim, edit lock, submit, reopen
   * attribution of edits (M8)
   * background jobs, driven synchronously with fake executors (M21)
   * admin: create user, reset password, backup, snapshot
@@ -126,10 +126,18 @@ def fake_import(runner, proj, job, ref):
 
 
 def fake_extract(runner, proj, job, uid):
-    """Stand-in for OpenRouter: writes one run with every feature empty."""
+    """Stand-in for both OpenRouter passes."""
     from annotaid.server.extraction import _blank_features
+    from annotaid.server import ai_settings
+    if job["params"].get("stage") == "discover":
+        items = proj.store.save_group_items(
+            uid, [{"label": "rs123", "evidence": "variant rs123 was associated"}],
+            reviewed=False, discovered=True,
+        )
+        return "done", "identified", {"uid": uid, "items": len(items)}, None
+    model = ai_settings.model(ai_settings.get(runner.db, proj.config))
     run = {
-        "uid": uid, "modelId": job["params"]["models"][0], "modelLabel": "fake",
+        "uid": uid, "modelId": model["slug"], "modelLabel": model["label"],
         "status": "done", "requestedAt": "2026-01-01T00:00:00Z",
         "features": _blank_features(proj.config.features),
         "groups": {}, "requestedBy": job["created_by"],
@@ -311,6 +319,15 @@ def scenarios(ctx, db, base):
     s, js, _ = cora.get(f"/api/projects/{pid}/config")
     check("curator reads project config", s == 200 and js["myRole"] == "curator"
           and js["permissions"]["extract"] is False, js and js.get("permissions"))
+    s, js, _ = root.post("/api/admin/ai-settings", {
+        "models": [{"slug": "test/default", "label": "Server default"}],
+        "defaultModel": "test/default", "parseEngine": "pdf-text",
+    })
+    check("superadmin sets the one server-wide default model",
+          s == 200 and js["aiSettings"]["defaultModel"] == "test/default", js)
+    s, cfg, _ = cora.get(f"/api/projects/{pid}/config")
+    check("project exposes only the server default model to curators",
+          [m["slug"] for m in cfg["models"]] == ["test/default"], cfg["models"])
     for path, label in [(f"/api/projects/{pid}/export", "export"),
                         (f"/api/projects/{pid}/config-file", "config download"),
                         (f"/api/projects/{pid}/links", "join links")]:
@@ -369,29 +386,43 @@ def scenarios(ctx, db, base):
     check("the rest of the job carried on", items["555"]["outcome"] == "added", items["555"])
 
     print("\nextraction job")
-    model = maya.get(f"/api/projects/{pid}/config")[1]["models"][0]["slug"]
-    s, js, _ = cora.post(f"/api/projects/{pid}/jobs", {"kind": "extract", "refs": [u1], "models": [model]})
-    check("curator can't start extraction (decision 6)", s == 403, s)
-    s, js, _ = maya.post(f"/api/projects/{pid}/jobs", {"kind": "extract", "refs": [u1], "models": ["no/such"]})
-    check("unknown model refused", s == 400, js)
-    s, ej, _ = maya.post(f"/api/projects/{pid}/jobs", {"kind": "extract", "refs": [u1, u2], "models": [model]})
-    check("extraction job created", s == 201, (s, ej))
+    s, js, _ = cora.post(f"/api/projects/{pid}/jobs",
+                         {"kind": "extract", "stage": "discover", "refs": [u1]})
+    check("curator can't start pass 1", s == 403, s)
+    s, ej, _ = maya.post(f"/api/projects/{pid}/jobs",
+                         {"kind": "extract", "stage": "discover", "refs": [u1, u2]})
+    check("manager starts identifier discovery", s == 201, (s, ej))
     ctx.jobs.run_next()
     s, st, _ = maya.get(f"/api/projects/{pid}/state")
-    run = next(r for r in st["runs"] if r["uid"] == u1)
-    check("run records who requested it", run.get("requestedBy") == maya_id, run.get("requestedBy"))
-    fname = next(iter(run["features"]))
+    discovered = {p["uid"]: p for p in st["papers"]}
+    check("pass 1 pauses with evidence and no curation run",
+          discovered[u1]["groupItemsDiscovered"] is True
+          and discovered[u1]["groupItemsReviewed"] is False
+          and discovered[u1]["groupItems"][0]["evidence"]
+          and st["runs"] == [], st)
 
-    # ------------------------------------------------------------------ #
-    print("\nworkflow + edit lock")
-    save = {"modelId": run["modelId"], "features": {fname: {"value": "edited", "confirmed": True}}}
-    s, js, _ = cora.post(f"/api/projects/{pid}/runs/{u1}", save)
-    check("can't edit an unclaimed paper", s == 403 and "claim" in js["error"], js)
     s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/claim")
     check("curator claims from the pool", s == 200 and js["paper"]["assigneeId"] == cora_id
           and js["paper"]["curationStatus"] == "in_progress", js)
     s, js, _ = maya.post(f"/api/projects/{pid}/papers/{u1}/claim")
     check("second claim loses", s == 409 and "Cora" in js["error"], js)
+    items = discovered[u1]["groupItems"]
+    s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/group-items",
+                         {"items": items, "reviewed": True})
+    check("assignee approves the discovered identifiers", s == 200 and js["reviewed"] is True, js)
+    s, curate_job, _ = cora.post(f"/api/projects/{pid}/jobs",
+                                 {"kind": "extract", "stage": "curate", "refs": [u1]})
+    check("assignee starts pass 2", s == 201, (s, curate_job))
+    ctx.jobs.run_next()
+    s, st, _ = maya.get(f"/api/projects/{pid}/state")
+    run = next(r for r in st["runs"] if r["uid"] == u1)
+    check("run records the curator who requested pass 2",
+          run.get("requestedBy") == cora_id, run.get("requestedBy"))
+    fname = next(iter(run["features"]))
+
+    # ------------------------------------------------------------------ #
+    print("\nworkflow + edit lock")
+    save = {"modelId": run["modelId"], "features": {fname: {"value": "edited", "confirmed": True}}}
     s, js, _ = maya.post(f"/api/projects/{pid}/runs/{u1}", save)
     check("even the manager can't edit someone else's paper (M7)", s == 403, js)
     s, js, _ = cora.post(f"/api/projects/{pid}/runs/{u1}", save)
@@ -401,8 +432,6 @@ def scenarios(ctx, db, base):
           and cell["confirmedBy"] == cora_id, cell)
     check("aiValue untouched", cell["aiValue"] != "edited")
 
-    s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/exclude", {"status": "excluded"})
-    check("exclude needs a reason", s == 400, js)
     s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/submit")
     check("assignee submits", s == 200 and js["paper"]["curationStatus"] == "submitted")
     s, js, _ = cora.post(f"/api/projects/{pid}/runs/{u1}", save)
@@ -417,9 +446,9 @@ def scenarios(ctx, db, base):
     check("can't assign to a non-member", s == 400, js)
     s, js, _ = maya.post(f"/api/projects/{pid}/papers/{u2}/assign", {"assigneeId": cora_id})
     check("manager assigns", s == 200 and js["paper"]["assigneeId"] == cora_id)
-    s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u2}/exclude",
-                         {"status": "unextractable", "reason": "does not report it"})
-    check("unextractable with reason", s == 200 and js["paper"]["statusReason"] == "does not report it")
+    s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u2}/submit")
+    check("the MVP has one terminal action: submit", s == 200
+          and js["paper"]["curationStatus"] == "submitted", js)
     s, js, _ = maya.get(f"/api/projects/{pid}/papers/{u1}/history")
     check("history records claim/submit/reopen",
           [e["action"] for e in js["events"]] == ["claim", "submit", "reopen"], js)

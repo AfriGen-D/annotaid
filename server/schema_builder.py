@@ -119,15 +119,11 @@ def build_prompt(base_text: str, features, context: str | None = None,
     field list because it qualifies how the fields should be read: "prefer the
     replication p-value" only makes sense before you see `p_value`.
 
-    `group_items` is {groupName: [label, ...]} — the curator's own declared row
-    identity for the paper this prompt is being built for (server/extraction.py,
-    store.load_group_items), NOT extracted by the model. When a group's name is
-    present here (even as an empty list, meaning "run without one"), the prompt
-    states the fixed, ordered list instead of asking the model to discover rows
-    and an identifier itself. Absent entirely (None, or the group's name simply
-    not a key) falls back to the old open-ended phrasing — used only by the
-    config-validation preview (h_validate_config), which has no specific paper
-    to declare items for.
+    `group_items` is {groupName: [label, ...]} — the pass-1 list after curator
+    review for this paper (server/extraction.py, store.load_group_items). When a
+    group's name is present here (even as an empty list), the prompt states the
+    fixed ordered list. Absent entirely falls back to generic preview wording;
+    a real group extraction never uses that path.
 
     NOTE: the whole return value is what util.prompt_id() must hash, not just
     base_text — feature descriptions, group structure and this context are all
@@ -161,17 +157,12 @@ def build_prompt(base_text: str, features, context: str | None = None,
                 "or reorder them, and do not include an identifier field of your own."
             )
         else:
-            ident = ", ".join(f.name for f in g.identifiers())
             lines.append(
-                f"Return one entry for every one the paper reports, at most {g.max_items}. "
-                f'If it reports none, set "present": false and return an empty list.'
+                "This is a project preview, so there is no paper-specific list yet. "
+                "In live curation, pass 1 identifies the entries; after curator review, "
+                "pass 2 receives that fixed ordered list and returns exactly one result "
+                "per reviewed entry."
             )
-            if ident:
-                # Spelling out the identifier rule matters: a row the model
-                # returns with no identifier cannot be named in the curation list.
-                lines.append(f"Every entry must have at least one of: {ident}.")
-            if g.min_items:
-                lines.append(f"At least {g.min_items} entr{'y' if g.min_items == 1 else 'ies'} is expected.")
         lines.append("Each entry has these fields:")
         lines += [_field_line(f, indent="  - ") for f in g.features]
 

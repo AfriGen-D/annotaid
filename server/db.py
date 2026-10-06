@@ -28,12 +28,21 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- Small server-wide product settings. Project documents own feature schemas
+-- and prompts; operational AI choices (allowed models and the defaults) do not.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -157,7 +166,7 @@ CREATE TABLE IF NOT EXISTS job_items (
   PRIMARY KEY (job_id, seq)
 );
 
--- Audit trail of workflow actions: claim / assign / submit / exclude / reopen
+-- Audit trail of workflow actions: claim / assign / submit / reopen
 -- on papers (uid set), and join / add / remove on membership (uid NULL).
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,19 +196,19 @@ CREATE TABLE IF NOT EXISTS papers (
   -- and content-addressed within its own namespace.
   has_pdf        INTEGER NOT NULL DEFAULT 1,
   abstract_text  TEXT,
-  -- Curator-declared identity for a project's one repeating group (e.g. which
-  -- variants/haplotypes this paper reports on), set BEFORE extraction runs and
-  -- never touched by the AI. JSON array of {"rowId","label"}, ordered; a label
-  -- may repeat (the same variant reported for two sub-populations is two
-  -- entries). Paper-scoped rather than run-scoped because it does not depend
-  -- on which model ran — every model's run addresses the SAME rows by rowId.
+  -- Pass-1 proposal for a project's one repeating group. JSON array of
+  -- {"rowId","label","evidence"?}, ordered; a label may repeat. Paper-scoped
+  -- because the reviewed list becomes the shared identity for pass 2.
   -- See server/extraction.py and server/project_store.load_group_items.
   group_items_json TEXT NOT NULL DEFAULT '[]',
+  group_items_discovered INTEGER NOT NULL DEFAULT 0,
+  -- Two-pass extraction: discovery writes an unreviewed identifier list; the
+  -- assignee explicitly approves it before the full feature extraction runs.
+  group_items_reviewed INTEGER NOT NULL DEFAULT 0,
   added_by       TEXT,
   -- Curation workflow (server/workflow.py). curation_status is NOT pmid_status:
   -- that one is about the paper's identity, this one about who is curating it
-  -- and how far they got. unassigned -> in_progress -> submitted, or
-  -- excluded / unextractable (with a reason). Only assignee_id may edit.
+  -- and how far they got. unassigned -> in_progress -> submitted.
   assignee_id     TEXT,
   curation_status TEXT NOT NULL DEFAULT 'unassigned',
   status_reason   TEXT,
@@ -353,6 +362,16 @@ MIGRATIONS = {
         # Re-keyed per user; it only holds view preferences, so it is dropped
         # rather than converted. SCHEMA_SQL recreates it.
         "DROP TABLE IF EXISTS ui_state",
+    ],
+    6: [
+        "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, "
+        "value_json TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)",
+        "ALTER TABLE papers ADD COLUMN group_items_reviewed INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE papers ADD COLUMN group_items_discovered INTEGER NOT NULL DEFAULT 0",
+        # The simplified MVP has one terminal state. Preserve previously
+        # finished test work rather than making legacy rows unreadable.
+        "UPDATE papers SET curation_status='submitted', status_reason=NULL "
+        "WHERE curation_status IN ('excluded','unextractable')",
     ],
 }
 

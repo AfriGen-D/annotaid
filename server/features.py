@@ -227,11 +227,9 @@ def _parse_group(raw: dict, where: str) -> Group:
         max_items=max(1, int(raw.get("maxItems") or DEFAULT_MAX_ITEMS)),
     )
 
-    # No "must have an identifier" check: a row's name now comes from the
-    # curator's own declared list for this paper (server/extraction.py,
-    # store.load_group_items), set before extraction runs — never from an
-    # AI-extracted field. `identifier: true` is still accepted on a leaf for a
-    # project that wants one anyway, but nothing requires it any more.
+    # No "must have an identifier" check: pass 1 discovers row identity and the
+    # curator reviews it before pass 2. `identifier: true` remains accepted for
+    # compatibility with older project files, but nothing requires it.
     if group.min_items > group.max_items:
         raise FeatureError(
             f"{where}: group {name!r} has min ({group.min_items}) above "
@@ -246,8 +244,7 @@ def parse_features(raw_list, where: str = "config") -> list:
         raise FeatureError(f"{where}: features must be a non-empty array")
 
     # At most one repeating group per project. Multiple independent groups
-    # (each with its own curator-declared row identity, see
-    # server/extraction.py) multiply the "which rows exist for this paper"
+    # (each with its own discovery/review pass) multiply the "which rows exist"
     # question by however many groups there are — one group keeps that
     # question singular, which is the whole point of the simplification.
     group_count = sum(

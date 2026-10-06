@@ -94,7 +94,7 @@ def rows_to_features(rows: list) -> list:
     """[{canonical_column: cell, ...}, ...] -> a raw features list, the same
     shape the visual editor edits. Raises SheetError for anything that can't be
     expressed as that shape at all; everything else (duplicate names, an enum
-    with no values, a group with no identifier, name characters) is left to
+    with no values, an empty repeating group, name characters) is left to
     features.parse_features so there is exactly one place those rules live.
     """
     top_level, groups_by_name = [], {}
@@ -180,7 +180,7 @@ def parse_sheet_csv(text: str) -> list:
     """Full pipeline: CSV text -> validated raw features list.
 
     Raises SheetError (a file-shaped problem) or features.FeatureError (a
-    feature-shaped problem, e.g. a group with no identifier) — the caller
+    feature-shaped problem, e.g. an empty repeating group) — the caller
     presents either the same way, since a project manager filling in a
     spreadsheet doesn't need to know which layer caught it.
     """
@@ -212,19 +212,16 @@ _TEMPLATE_ROWS = [
     ["variants", "", "group", "Variants",
      "One entry per genetic variant the paper reports an association for.",
      "", "", "", "50"],
-    ["rsid", "variants", "string", "", "dbSNP rsID, e.g. rs1801133.", "", "TRUE", "TRUE", ""],
-    ["variant_id", "variants", "string", "",
-     "Positional id, used only when no rsID is given.", "", "TRUE", "TRUE", ""],
+    ["gene", "variants", "string", "", "Gene mapped to this variant.", "", "TRUE", "", ""],
     ["odds_ratio", "variants", "number", "", "Odds ratio reported for this variant.",
      "", "TRUE", "", ""],
 ]
 
 
 def build_template_csv() -> str:
-    """A fill-in-the-blanks starting point: one plain feature, one list, one
-    enum, and a full group example (two identifiers, showing "either one names
-    the entry"). Rows illustrate the format rather than seeding a real project —
-    "start from the server's starter set" already covers that."""
+    """A fill-in-the-blanks starting point with paper-level fields and one
+    repeating group. Pass 1 discovers the group's row identifiers, so the
+    nested example contains only values pass 2 should curate."""
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(_TEMPLATE_HEADER)

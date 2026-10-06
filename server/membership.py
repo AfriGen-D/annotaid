@@ -130,8 +130,8 @@ def _guard_last_manager(c, project_id, user_id) -> None:
 
 def remove_member(db: Db, project_id: str, user_id: str, actor_id) -> int:
     """Remove someone from a project. Their in-progress papers go back to the
-    pool (otherwise nobody could ever edit them again, M7). Submitted /
-    excluded papers keep their assignee: that is history, not a lock.
+    pool (otherwise nobody could ever edit them again, M7). Submitted papers
+    keep their assignee: that is history, not a lock.
     Returns how many papers were released."""
     with db.write() as c:
         row = c.execute(

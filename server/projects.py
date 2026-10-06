@@ -39,6 +39,7 @@ MAX_DESCRIPTION = 4000
 # silently never persists.
 CONFIG_KEYS = ("features", "models", "prompts", "parseEngines", "defaults",
                "export", "settings")
+SHAREABLE_CONFIG_KEYS = ("features", "prompts", "export", "settings")
 
 
 class ProjectError(Exception):
@@ -98,7 +99,7 @@ def list_projects(db: Db, only_ids=None, include_archived: bool = False) -> list
           p.archived_at, p.created_by_name,
           (SELECT COUNT(*) FROM project_members WHERE project_id=p.id)              AS members,
           (SELECT COUNT(*) FROM papers WHERE project_id=p.id
-             AND curation_status IN ('submitted','excluded','unextractable'))       AS finished,
+             AND curation_status='submitted')                                      AS finished,
           (SELECT COUNT(*) FROM papers WHERE project_id=p.id)                       AS papers,
           (SELECT COUNT(*) FROM papers WHERE project_id=p.id
              AND pmid_status='pending')                                             AS pending,
@@ -173,7 +174,7 @@ def portable_document(db: Db, pid: str):
             {"name": row["created_by_name"], "email": row["created_by_email"]}
             if row["created_by_name"] else None
         ),
-        **{k: doc[k] for k in CONFIG_KEYS if k in doc},
+        **{k: doc[k] for k in SHAREABLE_CONFIG_KEYS if k in doc},
     }
 
 

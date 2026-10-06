@@ -158,12 +158,10 @@ class ProjectStore:
             return None
         return _paper_dict(row, self._models_for(uid))
 
-    # ---- the one repeating group's row identity (curator-declared) ------ #
+    # ---- the one repeating group's reviewed row identity ---------------- #
     def load_group_items(self, uid: str) -> list:
-        """[{"rowId","label"}, ...] in declaration order. Every model's run for
-        this paper addresses its group rows by these SAME rowIds — see
-        server/extraction.py, which requires this to be non-empty before it
-        will call the AI at all."""
+        """[{"rowId","label","evidence"?}, ...] in review order. Every run
+        addresses its group rows by these same rowIds."""
         raw = self.db.scalar(
             "SELECT group_items_json FROM papers WHERE project_id=? AND uid=?",
             (self.project_id, uid),
@@ -173,9 +171,9 @@ class ProjectStore:
         except json.JSONDecodeError:
             return []
 
-    def save_group_items(self, uid: str, items: list) -> list:
-        """Replace the declared list wholesale (same shape as save_run for
-        group rows). A rowId the caller sends that we don't recognise is
+    def save_group_items(self, uid: str, items: list, *, reviewed=None, discovered=None) -> list:
+        """Replace the discovered/reviewed list wholesale. A rowId the caller
+        sends that we don't recognise is
         treated as new — never trust the client to invent the id an existing
         row keeps; an unrecognised or missing one gets a fresh server id, so
         an item already extracted against keeps its identity across an edit
@@ -189,12 +187,31 @@ class ProjectStore:
             rid = (raw or {}).get("rowId")
             if not rid or rid not in existing_ids:
                 rid = util.short_id()
-            out.append({"rowId": rid, "label": label})
+            evidence = str((raw or {}).get("evidence") or "").strip() or None
+            item = {"rowId": rid, "label": label}
+            if evidence:
+                item["evidence"] = evidence
+            out.append(item)
         with self.db.write() as c:
-            c.execute(
-                "UPDATE papers SET group_items_json=? WHERE project_id=? AND uid=?",
-                (json.dumps(out, ensure_ascii=False), self.project_id, uid),
-            )
+            if reviewed is None and discovered is None:
+                c.execute(
+                    "UPDATE papers SET group_items_json=? WHERE project_id=? AND uid=?",
+                    (json.dumps(out, ensure_ascii=False), self.project_id, uid),
+                )
+            else:
+                current = c.execute(
+                    "SELECT group_items_reviewed, group_items_discovered FROM papers "
+                    "WHERE project_id=? AND uid=?", (self.project_id, uid)
+                ).fetchone()
+                next_reviewed = bool(reviewed) if reviewed is not None else bool(current["group_items_reviewed"])
+                next_discovered = bool(discovered) if discovered is not None else bool(current["group_items_discovered"])
+                c.execute(
+                    "UPDATE papers SET group_items_json=?, group_items_reviewed=?, group_items_discovered=? "
+                    "WHERE project_id=? AND uid=?",
+                    (json.dumps(out, ensure_ascii=False), 1 if next_reviewed else 0,
+                     1 if next_discovered else 0,
+                     self.project_id, uid),
+                )
         return out
 
     def load_paper_by_ident(self, ident: str):
@@ -650,6 +667,8 @@ def _paper_dict(row, models: list) -> dict:
         "hasPdf": bool(row["has_pdf"]),
         "abstractText": row["abstract_text"],
         "groupItems": _load_group_items_from_row(row),
+        "groupItemsDiscovered": bool(row["group_items_discovered"]),
+        "groupItemsReviewed": bool(row["group_items_reviewed"]),
         # Curation workflow (server/workflow.py).
         "assigneeId": row["assignee_id"],
         "curationStatus": row["curation_status"],

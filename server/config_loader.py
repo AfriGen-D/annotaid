@@ -1,8 +1,9 @@
 """Load and meta-validate a curation config, and load secrets from .keys.
 
-The config is config-driven (brief §8): it declares the feature list + types, the
-models, the prompt(s), and the CSV export mapping. Secrets live only in memory and
-are never serialised into an /api response.
+The config is config-driven (brief §8): it declares the feature list + types,
+prompt(s), and CSV export mapping. AI models and PDF processing are deployment
+settings managed by a superadmin; legacy project files may still carry models.
+Secrets live only in memory and are never serialised into an /api response.
 
 Since projects landed, a config arrives from one of two places:
 
@@ -35,7 +36,7 @@ from .features import FEATURE_TYPES, FeatureError  # noqa: F401  (re-exported)
 # be strictly worse for exactly the input a human is hand-editing.
 CONFIG_META_SCHEMA = {
     "type": "object",
-    "required": ["features", "models"],
+    "required": ["features"],
     "additionalProperties": True,
     "properties": {
         "features": {
@@ -53,7 +54,6 @@ CONFIG_META_SCHEMA = {
         },
         "models": {
             "type": "array",
-            "minItems": 1,
             "items": {
                 "type": "object",
                 "required": ["slug"],
@@ -234,7 +234,7 @@ def parse_config(cfg: dict, prompt_dir: str | None = None, label: str = "config"
 
     # normalise models (label fallback per notes.md)
     models = []
-    for m in cfg["models"]:
+    for m in cfg.get("models") or []:
         slug = m["slug"].strip()
         label = (m.get("label") or "").strip() or util.slugify(slug)
         models.append(

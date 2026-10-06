@@ -56,9 +56,9 @@ def main():
           features[2]["enumValues"] == ["European", "African", "Asian", "Mixed"])
     group = features[3]
     check("the group and its fields nested", group["type"] == "group"
-          and [f["name"] for f in group["features"]] == ["rsid", "variant_id", "odds_ratio"])
-    check("both identifiers came through",
-          group["features"][0]["identifier"] and group["features"][1]["identifier"])
+          and [f["name"] for f in group["features"]] == ["gene", "odds_ratio"])
+    check("row identifiers are not duplicated as pass-2 fields",
+          not any(f.get("identifier") for f in group["features"]))
     check("max entries parsed as an int", group["maxItems"] == 50)
     # The whole point of validating through features.parse_features: the
     # template must also survive the SAME rules a hand-built config does.

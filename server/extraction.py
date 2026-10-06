@@ -15,6 +15,119 @@ from .project_store import ProjectStore
 MAX_WORKERS = 4
 
 
+def _paper_source(config: Config, store: ProjectStore, paper: dict) -> dict:
+    """Attach the PDF path or abstract text used by either extraction pass."""
+    pdf_path = store.resolve_pdf(paper["uid"])
+    if pdf_path:
+        return {**paper, "_pdf_path": pdf_path}
+    if paper.get("hasPdf", True) is False and paper.get("abstractText"):
+        if not config.allow_extraction_on_abstract:
+            raise ValueError(
+                "this paper has no stored PDF (abstract-only) and the project "
+                "does not allow extraction on abstract"
+            )
+        return {**paper, "_abstract_text": paper["abstractText"]}
+    raise ValueError("no stored PDF for this paper")
+
+
+def _messages_for_paper(prompt_text: str, paper: dict, parse_engine: str):
+    if paper.get("_pdf_path"):
+        return (
+            openrouter.build_messages(prompt_text, paper["_pdf_path"], paper["filename"]),
+            parse_engine,
+        )
+    return openrouter.build_messages_abstract(prompt_text, paper.get("_abstract_text") or ""), None
+
+
+def discover_group_items(
+    config: Config,
+    secrets: Secrets,
+    store: ProjectStore,
+    paper: dict,
+    model: dict,
+    parse_engine: str,
+    context: str | None = None,
+) -> list:
+    """Pass 1: ask the model only which repeating-group entries exist.
+
+    The result deliberately remains unreviewed. A curator may rename, add or
+    remove identifiers, then explicitly approve the list before pass 2.
+    """
+    groups = config.groups()
+    if not groups:
+        return []
+    paper = _paper_source(config, store, paper)
+    group = groups[0]
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["items"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["label", "evidence"],
+                    "properties": {
+                        "label": {"type": "string"},
+                        "evidence": {"type": ["string", "null"]},
+                    },
+                },
+            }
+        },
+    }
+    prompt = (
+        "Identify the distinct entries reported for the repeating group "
+        f'\"{group.display}\". {group.description or ""}\n\n'
+        "Return the identifier exactly as written in the paper. Identifiers may use "
+        "different valid systems, including dbSNP rs identifiers, EVA accession IDs, "
+        "HGVS nomenclature, haplotype names, or another domain-specific format. Do not "
+        "normalise, merge, invent, or discard an identifier because its format differs. "
+        f"Return at most {group.max_items} entries. If none are reported, return an empty list.\n\n"
+        "For each entry, include a short verbatim quote containing the identifier.\n"
+        "Return ONLY JSON: {\"items\":[{\"label\":\"exact identifier\","
+        "\"evidence\":\"verbatim quote or null\"}]}"
+    )
+    if context:
+        prompt += "\n\nProject context:\n" + context.strip()
+    messages, engine = _messages_for_paper(prompt, paper, parse_engine)
+    payload = openrouter.build_payload(
+        model["slug"], messages, schema, engine,
+        send_response_format=model.get("supportsStructuredOutput", False),
+    )
+    try:
+        raw = validation.extract_json(openrouter.call(payload, secrets.openrouter_api_key))
+        if not isinstance(raw, dict) or not isinstance(raw.get("items"), list):
+            raise ValueError('response must be an object with an "items" array')
+    except (ValueError, openrouter.OpenRouterError) as exc:
+        raise ValueError(f"could not identify {group.display} entries: {exc}") from exc
+    # A deliberate re-discovery should not orphan existing run rows merely
+    # because the same label came back without its server rowId.
+    previous = store.load_group_items(paper["uid"])
+    by_label = {}
+    for old in previous:
+        by_label.setdefault(old.get("label"), []).append(old.get("rowId"))
+
+    items, seen = [], set()
+    for item in raw.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        evidence = str(item.get("evidence") or "").strip() or None
+        item_out = {"label": label, "evidence": evidence}
+        old_ids = by_label.get(label) or []
+        if len(old_ids) == 1 and old_ids[0]:
+            item_out["rowId"] = old_ids[0]
+        items.append(item_out)
+        if len(items) >= group.max_items:
+            break
+    return store.save_group_items(paper["uid"], items, reviewed=False, discovered=True)
+
+
 def _cell(leaf, node: dict) -> dict:
     """One curated cell. aiValue is written once here and never again — the pair
     (what the AI said, what the curator settled on) IS the audit signal."""
@@ -39,9 +152,7 @@ def _blank_features(features: list) -> dict:
 
 
 def _blank_groups(features: list, group_items: list) -> dict:
-    """Rows are seeded from the curator's declared items (server/project_store.
-    load_group_items), not invented here — used on outright failure, so the
-    curator still sees every declared row (blank) rather than an empty group."""
+    """Seed blank rows from the curator-reviewed pass-1 list on failure."""
     groups = feat.groups(features)
     if not groups:
         return {}
@@ -68,7 +179,7 @@ def _features_from_canonical(canonical: dict, features: list) -> dict:
 
 def _groups_from_canonical(canonical: dict, features: list, group_items: list) -> dict:
     """Turn the group's canonical items into rows — matched POSITIONALLY against
-    the curator's declared row list, never by an AI-supplied identifier (there
+    the reviewed pass-1 list, never by a pass-2 identifier (there
     isn't one any more: schema_builder.build_prompt asks for value-only entries
     in a fixed order once group_items is known). A declared item the model
     didn't return becomes a blank row rather than vanishing; anything the model
@@ -113,10 +224,8 @@ def extract_one(
     context: str | None = None,
     group_items: list | None = None,
 ) -> dict:
-    """group_items: this paper's curator-declared row identity for the project's
-    one repeating group (server/project_store.load_group_items), or [] if the
-    config has no group. run_extraction has already refused to call this at all
-    if a group exists and group_items is empty."""
+    """group_items is the curator-reviewed pass-1 identity list, or [] when the
+    project has no group (or the reviewed result was genuinely empty)."""
     features = config.features
     group_items = group_items or []
     schema = schema_builder.build_response_schema(features)
@@ -224,6 +333,7 @@ def run_extraction(
     force: bool = False,
     context: str | None = None,
     requested_by: str | None = None,
+    models_override: list | None = None,
 ) -> list:
     # A paper needs a RESOLVED identity, which no longer has to be a PMID — a
     # paper deliberately marked as having none (optionally with a DOI) is
@@ -235,44 +345,24 @@ def run_extraction(
     if prompt is None:
         raise ValueError(f"unknown promptId: {prompt_id}")
     engine = parse_engine or config.default_parse_engine()
-    if engine not in config.parse_engines:
-        raise ValueError(f"unknown parseEngine: {engine}")
+    paper = _paper_source(config, store, paper)
 
-    pdf_path = store.resolve_pdf(paper["uid"])
-    if pdf_path:
-        paper = {**paper, "_pdf_path": pdf_path}
-    elif paper.get("hasPdf", True) is False and paper.get("abstractText"):
-        # allowExtractionOnAbstract fallback (server/papers.store_and_confirm_
-        # from_abstract): this paper was never given a PDF in the first place,
-        # so there is nothing to resolve here — its abstract is the content.
-        if not config.allow_extraction_on_abstract:
-            raise ValueError(
-                "this paper has no stored PDF (abstract-only) and the project "
-                "does not allow extraction on abstract"
-            )
-        paper = {**paper, "_abstract_text": paper["abstractText"]}
-    else:
-        raise ValueError("no stored PDF for this paper")
-
-    models = [config.model(s) for s in model_slugs]
+    available = models_override if models_override is not None else config.models
+    models = [next((m for m in available if m.get("slug") == s), None) for s in model_slugs]
     if any(m is None for m in models):
         missing = [s for s, m in zip(model_slugs, models) if m is None]
         raise ValueError(f"unknown model(s): {missing}")
 
-    # The project's one repeating group (features.parse_features caps it at
-    # one) needs its row identity DECLARED before any model can run — the AI
-    # only ever fills in values for rows that already exist (server/schema_
-    # builder.build_prompt), it never invents or names one.
+    # Pass 2 may run only after the assignee reviewed pass 1's identifier list.
+    # An approved empty list is valid: the paper can still have global fields.
     groups = config.groups()
     group_items = []
     if groups:
         group = groups[0]
         group_items = store.load_group_items(paper["uid"])
-        if not group_items:
+        if not paper.get("groupItemsReviewed"):
             raise ValueError(
-                f'add at least one "{group.display}" entry for this paper '
-                "before running extraction — the AI fills in values for rows "
-                "you declare, it does not invent the rows themselves"
+                f'review the discovered "{group.display}" entries before running full extraction'
             )
 
     # decide which need running (protect curator edits unless force)

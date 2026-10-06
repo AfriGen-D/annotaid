@@ -1,9 +1,8 @@
 """Paper curation workflow: who is responsible for a paper and how far it got.
 
     unassigned --claim / assign--> in_progress --submit--> submitted
-                                   in_progress --exclude--> excluded | unextractable
     in_progress --unassign (manager)--> unassigned
-    submitted / excluded / unextractable --reopen (manager)--> in_progress
+    submitted --reopen (manager)--> in_progress
                                          (or unassigned if nobody holds it)
 
 Only the assignee may edit a paper, and only while it is in progress (M7). A
@@ -27,10 +26,8 @@ from .membership import at_least, log_event
 UNASSIGNED = "unassigned"
 IN_PROGRESS = "in_progress"
 SUBMITTED = "submitted"
-EXCLUDED = "excluded"
-UNEXTRACTABLE = "unextractable"
-STATUSES = (UNASSIGNED, IN_PROGRESS, SUBMITTED, EXCLUDED, UNEXTRACTABLE)
-FINISHED = (SUBMITTED, EXCLUDED, UNEXTRACTABLE)
+STATUSES = (UNASSIGNED, IN_PROGRESS, SUBMITTED)
+FINISHED = (SUBMITTED,)
 MAX_REASON = 2000
 
 
@@ -160,25 +157,6 @@ def submit(db: Db, user, project_id: str, uid: str) -> None:
         log_event(c, project_id, uid, user["id"], "submit")
 
 
-def exclude(db: Db, user, project_id: str, uid: str, status: str, reason) -> None:
-    """Excluded (out of scope) or unextractable (in scope, info not reported).
-    A written reason is required so the decision can be reviewed (M9)."""
-    if status not in (EXCLUDED, UNEXTRACTABLE):
-        raise WorkflowError("status must be 'excluded' or 'unextractable'", 400)
-    reason = str(reason or "").strip()
-    if not reason:
-        raise WorkflowError("give a reason, so the decision can be reviewed later", 400)
-    if len(reason) > MAX_REASON:
-        raise WorkflowError(f"reason is too long (max {MAX_REASON} characters)", 400)
-    with db.write() as c:
-        row = _paper(c, project_id, uid)
-        _require_holder(row, user)
-        _set(c, project_id, uid, "assignee_id=? AND curation_status=?",
-             (user["id"], IN_PROGRESS),
-             assignee=user["id"], status=status, reason=reason, actor=user["id"])
-        log_event(c, project_id, uid, user["id"], status, reason=reason)
-
-
 def reopen(db: Db, actor, project_id: str, uid: str, reason=None) -> None:
     """A manager sends a finished paper back to work. Not in the SRS; without
     it one wrong click on "submit" would be permanent. Logged like the rest."""
@@ -186,7 +164,7 @@ def reopen(db: Db, actor, project_id: str, uid: str, reason=None) -> None:
     with db.write() as c:
         row = _paper(c, project_id, uid)
         if row["curation_status"] not in FINISHED:
-            raise WorkflowError("only a submitted, excluded or unextractable paper can be reopened")
+            raise WorkflowError("only a submitted paper can be reopened")
         holder_active = row["assignee_id"] and c.execute(
             "SELECT 1 FROM project_members m JOIN users u ON u.id=m.user_id "
             "WHERE m.project_id=? AND m.user_id=? AND u.state='active'",

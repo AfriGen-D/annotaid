@@ -18,6 +18,7 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 from . import (
+    ai_settings,
     auth,
     auth_handlers,
     config_loader,
@@ -150,6 +151,10 @@ def h_template(ctx, req, params, body):
     if ctx.template is None:
         return responses.send_error_json(req, 404, "no starter template is loaded")
     doc = ctx.template.portable_dict()
+    # Operational AI choices are superadmin-owned, not part of the project
+    # artifact a manager edits or shares.
+    for key in ("models", "parseEngines", "defaults"):
+        doc.pop(key, None)
     doc["annotaidProject"] = projects_mod.DOC_VERSION
     responses.send_json(req, doc)
 
@@ -200,8 +205,7 @@ def h_validate_config(ctx, req, params, body):
     except json.JSONDecodeError:
         return responses.send_error_json(req, 400, "invalid JSON")
 
-    doc = {k: v for k, v in (data.get("config") or {}).items()
-           if k in projects_mod.CONFIG_KEYS}
+    doc = _project_config_doc(ctx, data.get("config") or {})
     try:
         cfg = config_loader.parse_config(doc, label="draft")
     except config_loader.ConfigError as exc:
@@ -242,6 +246,19 @@ def h_projects_list(ctx, req, params, body):
     })
 
 
+def _project_config_doc(ctx, raw) -> dict:
+    """Build an internal project config from the manager-owned artifact.
+
+    The stored document retains a snapshot of server AI settings only as an
+    upgrade fallback. The project UI, portable file and extraction requests do
+    not expose or select them.
+    """
+    doc = {k: v for k, v in (raw or {}).items() if k in projects_mod.CONFIG_KEYS}
+    if not doc.get("models"):
+        doc["models"] = ai_settings.get(ctx.db, ctx.template).get("models") or []
+    return doc
+
+
 @account_roles("superadmin", "manager")
 def h_project_create(ctx, req, params, body):
     try:
@@ -260,6 +277,8 @@ def h_project_create(ctx, req, params, body):
                 "no starter template is loaded — supply a project config to create from",
             )
         doc = ctx.template.portable_dict()
+    else:
+        doc = _project_config_doc(ctx, doc)
 
     user = req.user
     try:
@@ -295,7 +314,10 @@ def h_project_update(ctx, proj, req, params, body):
             ctx.db, proj.id,
             name=data.get("name"),
             description=data.get("description"),
-            config_doc=data.get("config"),
+            config_doc=(
+                _project_config_doc(ctx, data.get("config"))
+                if data.get("config") is not None else None
+            ),
         )
     except projects_mod.ProjectError as exc:
         return responses.send_error_json(req, 400, str(exc))
@@ -315,6 +337,12 @@ def h_project_archive(ctx, proj, req, params, body):
 @project_route()
 def h_project_config(ctx, proj, req, params, body):
     doc = proj.config.public_dict()
+    ai = ai_settings.get(ctx.db, proj.config)
+    default_model = ai_settings.model(ai)
+    # Curators get one operational model, not a provider configuration panel.
+    doc["models"] = [default_model] if default_model else []
+    doc["defaults"]["model"] = ai.get("defaultModel")
+    doc["defaults"]["parseEngine"] = ai.get("parseEngine")
     doc["limits"] = _limits(ctx)
     doc["project"] = proj.meta()
     doc["myRole"] = req.project_role
@@ -415,9 +443,11 @@ def h_identity(ctx, proj, req, params, body):
 
 @project_route()
 def h_save_group_items(ctx, proj, req, params, body):
-    """The declared row identity for the project's one repeating group (e.g.
-    which variants this paper reports on) — set BEFORE extraction, never
-    proposed by the AI. Set-up, like h_identity: managers, or the assignee."""
+    """Review the pass-1 entries for the project's repeating group.
+
+    Pass 1 saves an unreviewed AI proposal. A manager or assignee may correct
+    it; only the assigned curator can approve it and thereby unlock pass 2.
+    """
     try:
         data = _json_body(body)
     except json.JSONDecodeError:
@@ -431,8 +461,16 @@ def h_save_group_items(ctx, proj, req, params, body):
     items = data.get("items")
     if not isinstance(items, list):
         return responses.send_error_json(req, 400, "items must be an array")
-    saved = proj.store.save_group_items(uid, items)
-    responses.send_json(req, {"items": saved})
+    reviewed = data.get("reviewed")
+    if reviewed is True:
+        blocked = workflow.edit_block_reason(ctx.db, req.user, proj.id, uid)
+        if blocked:
+            return responses.send_error_json(req, 403, blocked)
+    saved = proj.store.save_group_items(
+        uid, items, reviewed=reviewed,
+        discovered=True if reviewed is True else None,
+    )
+    responses.send_json(req, {"items": saved, "reviewed": bool(reviewed)})
 
 
 @project_route()
@@ -521,37 +559,19 @@ def h_project_config_download(ctx, proj, req, params, body):
 
 @project_route("manager")
 def h_export(ctx, proj, req, params, body):
-    fmt = _query(req).get("format", "json")
+    fmt = _query(req).get("format", "csv")
     slug = util.slugify(proj.name) or "project"
-    if fmt == "csv":
-        text = export.export_csv(proj.store, proj.config)
-        return responses.send_text(
-            req, text, "text/csv; charset=utf-8",
-            extra={"Content-Disposition":
-                   f'attachment; filename="annotaid_{slug}.csv"'},
-        )
-    doc = export.export_audit_json(proj.store, proj.config, proj)
-    doc["generatedAt"] = util.iso_now()
-    # Attribution ids -> who they are (M8). Never includes password data.
-    doc["users"] = {
-        r["id"]: {"name": r["name"], "email": r["email"]}
-        for r in ctx.db.query("SELECT id, name, email FROM users")
-    }
-    doc["events"] = [
-        {"at": r["at"], "uid": r["uid"], "actor": r["actor"], "action": r["action"],
-         "detail": json.loads(r["detail_json"] or "{}")}
-        for r in ctx.db.query("SELECT * FROM events WHERE project_id=? ORDER BY id", (proj.id,))
-    ]
+    if fmt != "csv":
+        return responses.send_error_json(req, 400, "only CSV export is available")
+    text = export.export_csv(proj.store, proj.config)
     responses.send_text(
-        req, json.dumps(doc, indent=2, ensure_ascii=False),
-        "application/json; charset=utf-8",
-        extra={"Content-Disposition":
-               f'attachment; filename="annotaid_{slug}_audit.json"'},
+        req, text, "text/csv; charset=utf-8",
+        extra={"Content-Disposition": f'attachment; filename="annotaid_{slug}.csv"'},
     )
 
 
 # --------------------------------------------------------------------------- #
-# Workflow: claim / assign / submit / exclude / reopen (M3, M7, M9, M17)
+# Workflow: claim / assign / submit / reopen
 # --------------------------------------------------------------------------- #
 def _paper_uid(proj, params):
     return proj.store.uid_for(params["uid"])
@@ -596,22 +616,6 @@ def h_submit(ctx, proj, req, params, body):
         return responses.send_error_json(req, 404, f"no paper {params['uid']}")
     try:
         workflow.submit(ctx.db, req.user, proj.id, uid)
-    except workflow.WorkflowError as exc:
-        return _workflow_error(req, exc)
-    _reply_paper(req, proj, uid)
-
-
-@project_route()
-def h_exclude(ctx, proj, req, params, body):
-    try:
-        data = _json_body(body)
-    except json.JSONDecodeError:
-        return responses.send_error_json(req, 400, "invalid JSON")
-    uid = _paper_uid(proj, params)
-    if not uid:
-        return responses.send_error_json(req, 404, f"no paper {params['uid']}")
-    try:
-        workflow.exclude(ctx.db, req.user, proj.id, uid, data.get("status"), data.get("reason"))
     except workflow.WorkflowError as exc:
         return _workflow_error(req, exc)
     _reply_paper(req, proj, uid)
@@ -663,25 +667,30 @@ def h_jobs_create(ctx, proj, req, params, body):
         if bad:
             return responses.send_error_json(req, 400, f"not a PMID: {', '.join(map(str, bad[:5]))}")
     elif kind == "extract":
-        if not membership.at_least(role, EXTRACT_MIN_ROLE):
-            return responses.send_error_json(req, 403, "only this project's managers can run extraction")
         if not _extraction_enabled(ctx):
             return responses.send_error_json(req, 400, "extraction is not configured on this server")
-        models = data.get("models") or []
-        if not models:
-            return responses.send_error_json(req, 400, "choose at least one model")
-        unknown = [m for m in models if proj.config.model(m) is None]
-        if unknown:
-            return responses.send_error_json(req, 400, f"unknown model(s): {', '.join(unknown)}")
+        stage = data.get("stage") or ("discover" if proj.config.groups() else "curate")
+        if stage not in ("discover", "curate"):
+            return responses.send_error_json(req, 400, "extraction stage must be 'discover' or 'curate'")
+        if stage == "discover" and not membership.at_least(role, EXTRACT_MIN_ROLE):
+            return responses.send_error_json(req, 403, "only this project's managers can identify repeat-group entries")
+        if stage == "discover" and not proj.config.groups():
+            return responses.send_error_json(req, 400, "this project has no repeating group to identify")
+        if stage == "curate" and not proj.config.groups() and not membership.at_least(role, EXTRACT_MIN_ROLE):
+            return responses.send_error_json(req, 403, "only this project's managers can start AI curation")
         uids = []
         for r in refs:
             uid = proj.store.uid_for(str(r))
             if not uid:
                 return responses.send_error_json(req, 400, f"no paper {r} in this project")
+            if stage == "curate" and proj.config.groups():
+                blocked = workflow.edit_block_reason(ctx.db, req.user, proj.id, uid)
+                if blocked:
+                    return responses.send_error_json(req, 403, blocked)
             uids.append(uid)
         refs = uids
-        params_ = {"models": models, "promptId": data.get("promptId"),
-                   "parseEngine": data.get("parseEngine"), "force": bool(data.get("force"))}
+        params_ = {"stage": stage, "promptId": data.get("promptId"),
+                   "force": bool(data.get("force"))}
     else:
         return responses.send_error_json(req, 400, "kind must be 'import' or 'extract'")
     try:
@@ -838,7 +847,6 @@ def register(router):
     router.add("POST", "/api/projects/{pid}/papers/{uid}/claim", h_claim)
     router.add("POST", "/api/projects/{pid}/papers/{uid}/assign", h_assign)
     router.add("POST", "/api/projects/{pid}/papers/{uid}/submit", h_submit)
-    router.add("POST", "/api/projects/{pid}/papers/{uid}/exclude", h_exclude)
     router.add("POST", "/api/projects/{pid}/papers/{uid}/reopen", h_reopen)
     router.add("GET", "/api/projects/{pid}/papers/{uid}/history", h_paper_history)
 
