@@ -96,6 +96,18 @@
       <div class="auth-msg" id="systemMsg" hidden></div>
       <div class="sys-grid" id="sysFacts"></div>
 
+      <h2>AI settings</h2>
+      <p class="pane-lede">These choices apply to every project. Managers start extraction; curators never need to choose a provider or PDF-processing engine.</p>
+      <form class="admin-form ai-form" id="aiForm">
+        <div id="aiModels"></div>
+        <button class="btn" id="addModelBtn" type="button">Add model</button>
+        <div class="form-row ai-defaults">
+          <label class="auth-field"><span>Default model</span><select id="defaultModel"></select></label>
+          <label class="auth-field"><span>PDF processing</span><select id="parseEngine"></select></label>
+        </div>
+        <div class="auth-actions"><button class="btn primary" type="submit">Save AI settings</button></div>
+      </form>
+
       <h2>Backups</h2>
       <p class="pane-lede" id="lastBackup"></p>
       <div class="sys-actions">

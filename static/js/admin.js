@@ -588,6 +588,8 @@ function renderSystem() {
       `${users.pending || 0} pending · ${users.deactivated || 0} deactivated · ${users.rejected || 0} rejected`),
   );
 
+  renderAiSettings(s.aiSettings || {}, s.parseEngines || []);
+
   $("#lastBackup").textContent = s.lastBackup
     ? `Last backup: ${fmtTime(s.lastBackup.at)} (${s.lastBackup.file}, ${fmtBytes(s.lastBackup.size)}).`
     : "No backups yet.";
@@ -629,6 +631,70 @@ function renderSystem() {
     );
     eBody.append(tr);
   }
+}
+
+function renderAiSettings(settings, engines) {
+  const box = $("#aiModels");
+  box.replaceChildren();
+  const models = (settings.models || []).map((m) => ({ ...m }));
+  const draw = () => {
+    box.replaceChildren();
+    models.forEach((m, i) => {
+      const row = el("div", "ai-model-row");
+      const slugLab = el("label", "auth-field");
+      slugLab.append(el("span", null, "OpenRouter model slug"));
+      const slug = el("input"); slug.value = m.slug || "";
+      slug.addEventListener("input", () => { m.slug = slug.value; syncDefaults(); });
+      slugLab.append(slug);
+      const labelLab = el("label", "auth-field");
+      labelLab.append(el("span", null, "Display name"));
+      const label = el("input"); label.value = m.label || "";
+      label.addEventListener("input", () => { m.label = label.value; syncDefaults(); });
+      labelLab.append(label);
+      const structured = el("label", "ai-structured");
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = !!m.supportsStructuredOutput;
+      cb.addEventListener("change", () => { m.supportsStructuredOutput = cb.checked; });
+      structured.append(cb, document.createTextNode("Structured output"));
+      const remove = button("Remove", "btn", () => { models.splice(i, 1); draw(); });
+      row.append(slugLab, labelLab, structured, remove);
+      box.append(row);
+    });
+    syncDefaults();
+  };
+  const syncDefaults = () => {
+    const sel = $("#defaultModel");
+    const before = sel.value || settings.defaultModel;
+    sel.replaceChildren();
+    for (const m of models) {
+      const o = el("option", null, m.label || m.slug || "Unnamed model");
+      o.value = m.slug || "";
+      sel.append(o);
+    }
+    if (models.some((m) => m.slug === before)) sel.value = before;
+  };
+  draw();
+  $("#addModelBtn").onclick = () => { models.push({ slug: "", label: "", supportsStructuredOutput: false }); draw(); };
+  const engine = $("#parseEngine");
+  engine.replaceChildren();
+  for (const name of engines) { const o = el("option", null, name); o.value = name; engine.append(o); }
+  engine.value = settings.parseEngine || "pdf-text";
+  $("#aiForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const submit = event.currentTarget.querySelector('button[type="submit"]');
+    await busy(submit, async () => {
+      showMsg($("#systemMsg"), "");
+      try {
+        const out = await jpost("/api/admin/ai-settings", {
+          models,
+          defaultModel: $("#defaultModel").value,
+          parseEngine: engine.value,
+        });
+        S.system.aiSettings = out.aiSettings;
+        renderAiSettings(out.aiSettings, engines);
+        showMsg($("#systemMsg"), "AI settings saved for every project.", "ok");
+      } catch (err) { showMsg($("#systemMsg"), err.message); }
+    });
+  };
 }
 
 function wireSystem() {

@@ -45,9 +45,8 @@ export function blankGroup(siblings = []) {
     type: "group",
     description: "",
     maxItems: 50,
-    // No auto-identifier field: a row's identity is now declared by the
-    // curator per paper (before extraction runs), not extracted by the AI —
-    // see the "Variant/Haplotype IDs" panel in the curation view.
+    // Pass 1 discovers row identity separately. These are only the values that
+    // pass 2 should curate for each reviewed entry.
     features: [blankLeaf()],
   };
 }
@@ -68,13 +67,27 @@ export function renderFeatureEditor(host, { features, onChange }) {
         "No features yet. Add the values a curator should record for each paper."));
     }
 
+    host.appendChild(el("div", "fe-sub-lab", "Paper-level features"));
+    host.appendChild(el("div", "modal-hint",
+      "Each of these values is recorded once for the paper."));
     features.forEach((f, i) => {
-      host.appendChild(f.type === "group" ? groupCard(f, i) : leafCard(f, i, null));
+      if (f.type !== "group") host.appendChild(leafCard(f, i, null));
     });
 
-    const actions = el("div", "fe-actions");
+    const paperActions = el("div", "fe-actions");
     const addF = el("button", "btn", "+ Feature");
     addF.onclick = () => { features.push(blankLeaf(features)); fire(); draw(); };
+    paperActions.appendChild(addF);
+    host.appendChild(paperActions);
+
+    host.appendChild(el("div", "fe-sub-lab", "Repeating group (optional)"));
+    host.appendChild(el("div", "modal-hint",
+      "Use this for a list such as genetic variants. AI discovers the entry IDs first; define only the values to curate for every reviewed entry."));
+    features.forEach((f, i) => {
+      if (f.type === "group") host.appendChild(groupCard(f, i));
+    });
+
+    const groupActions = el("div", "fe-actions");
     const addG = el("button", "btn", "+ Repeating group");
     // At most one per project (server/features.parse_features) — its rows are
     // identified by what the curator declares per paper, not by a feature, so
@@ -86,9 +99,8 @@ export function renderFeatureEditor(host, { features, onChange }) {
       ? "A project may have at most one repeating group"
       : "A set of fields curated once per entry — e.g. one per variant";
     addG.onclick = () => { features.push(blankGroup(features)); fire(); draw(); };
-    actions.appendChild(addF);
-    actions.appendChild(addG);
-    host.appendChild(actions);
+    groupActions.appendChild(addG);
+    host.appendChild(groupActions);
   }
 
   // ---- shared bits --------------------------------------------------------
@@ -122,6 +134,34 @@ export function renderFeatureEditor(host, { features, onChange }) {
     down.onclick = () => { [list[i + 1], list[i]] = [list[i], list[i + 1]]; fire(); redraw(); };
     del.onclick = () => { list.splice(i, 1); fire(); redraw(); };
     wrap.appendChild(up); wrap.appendChild(down); wrap.appendChild(del);
+    return wrap;
+  }
+
+  // The top level is displayed in two semantic sections even though it is one
+  // config array. Reorder within a section so an imported group cannot make a
+  // paper-level arrow appear to do nothing by swapping across that boundary.
+  function topLevelControls(i, redraw) {
+    const kind = features[i].type === "group" ? "group" : "leaf";
+    const peers = features.map((f, idx) => ({ f, idx })).filter(x =>
+      (x.f.type === "group" ? "group" : "leaf") === kind);
+    const at = peers.findIndex(x => x.idx === i);
+    const wrap = el("div", "fe-move");
+    const up = el("button", "fe-icon", "↑");
+    const down = el("button", "fe-icon", "↓");
+    const del = el("button", "fe-icon fe-del", "×");
+    up.title = "Move up"; down.title = "Move down"; del.title = "Remove";
+    up.disabled = at <= 0;
+    down.disabled = at < 0 || at === peers.length - 1;
+    up.onclick = () => {
+      const j = peers[at - 1].idx;
+      [features[j], features[i]] = [features[i], features[j]]; fire(); redraw();
+    };
+    down.onclick = () => {
+      const j = peers[at + 1].idx;
+      [features[j], features[i]] = [features[i], features[j]]; fire(); redraw();
+    };
+    del.onclick = () => { features.splice(i, 1); fire(); redraw(); };
+    wrap.append(up, down, del);
     return wrap;
   }
 
@@ -181,30 +221,13 @@ export function renderFeatureEditor(host, { features, onChange }) {
     head.appendChild(textInput(f, "name", "field_name", "fe-input fe-name"));
     head.appendChild(textInput(f, "label", "Display name (optional)", "fe-input fe-label"));
     head.appendChild(typeSelect(f, redraw));
-    head.appendChild(moveControls(list, i, redraw));
+    head.appendChild(group ? moveControls(list, i, redraw) : topLevelControls(i, redraw));
     card.appendChild(head);
 
     card.appendChild(descBox(f));
 
     const opts = el("div", "fe-opts");
     opts.appendChild(nullableRow(f));
-    if (group) {
-      // Optional now, not required: a row's identity comes from what the
-      // curator declares per paper before extraction runs (the
-      // "Variant/Haplotype IDs" panel), not from a feature the AI extracts.
-      // This only matters if you still want the AI to also propose a value
-      // that happens to name the entry for some other reason.
-      const lab = el("label", "fe-check");
-      const cb = el("input");
-      cb.type = "checkbox";
-      cb.checked = !!f.identifier;
-      cb.onchange = () => { f.identifier = cb.checked; fire(); };
-      lab.appendChild(cb);
-      lab.appendChild(el("span", null, "also names the entry (optional)"));
-      lab.title = "Row identity is normally declared by the curator per paper, "
-        + "before extraction — this is only a fallback label if that hasn't been set.";
-      opts.appendChild(lab);
-    }
     card.appendChild(opts);
 
     if (f.type === "enum") card.appendChild(enumRow(f));
@@ -229,7 +252,7 @@ export function renderFeatureEditor(host, { features, onChange }) {
     head.appendChild(textInput(g, "name", "group_name", "fe-input fe-name"));
     head.appendChild(textInput(g, "label", "Display name (optional)", "fe-input fe-label"));
     head.appendChild(el("span", "fe-type-fixed", "repeating group"));
-    head.appendChild(moveControls(features, i, draw));
+    head.appendChild(topLevelControls(i, draw));
     card.appendChild(head);
 
     card.appendChild(descBox(g));
@@ -248,7 +271,7 @@ export function renderFeatureEditor(host, { features, onChange }) {
     opts.appendChild(cap);
     card.appendChild(opts);
 
-    card.appendChild(el("div", "fe-sub-lab", "Fields curated for each entry"));
+    card.appendChild(el("div", "fe-sub-lab", "Values curated for each reviewed entry"));
     const body = el("div", "fe-sub");
     g._body = body;          // stashed so drawGroupBody can find it
     card.appendChild(body);

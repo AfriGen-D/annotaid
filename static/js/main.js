@@ -8,7 +8,7 @@
 // The server enforces both; the UI just doesn't offer what would only error.
 import { api, setProject } from "./api.js";
 import { $, el, toast, downloadFile } from "./dom.js";
-import { renderUserMenu } from "./session.js";
+import { getMe } from "./session.js";
 import * as viewer from "./pdfViewer.js";
 import * as store from "./store.js";
 import { renderPaperList, paperLabel, STATUS_FILTERS } from "./paperList.js";
@@ -41,6 +41,7 @@ const S = {
   cardIndex: 0,                   // active item index in card mode
   openRowByGroup: {},             // groupName -> rowId currently expanded
   evidenceCells: {},              // matcher key -> the cell it belongs to
+  curatingUids: new Set(),        // papers with an active pass-2 job
 };
 
 /* ---------------- boot ---------------- */
@@ -65,9 +66,9 @@ async function boot() {
   wireLayout();
   $("#pages").addEventListener("scroll", hideSelectionBtn);
 
-  // The user menu doubles as the sign-in gate: no session -> /login, a forced
-  // password change -> /account, and either way this never resolves.
-  S.account = await renderUserMenu($("#userMenu"));
+  // Authenticate without adding account controls to the focused project view.
+  // Account and sign-out remain on the projects page.
+  S.account = await getMe();
 
   // Autosave never fires for a paper this user can't edit, and a 403 that
   // slips through anyway (reassigned under us) resyncs instead of retrying.
@@ -121,7 +122,7 @@ function applyPermissions() {
   $("#addPdfBtn").hidden = !P.addPapers;
   $("#importbtn").hidden = !P.manage;          // model-output import is manager-only too
   $("#extractBtn").hidden = !P.extract;
-  $("#downloadwrap").hidden = !P.export;
+  $("#downloadbtn").hidden = !P.export;
   $("#jobsBtn").hidden = !P.manage;
   $("#teamBtn").hidden = !P.manage;
 }
@@ -156,12 +157,6 @@ function modalCallbacks() {
     onNoPmid: markPaperNoPmid,
     onStartExtract: startExtractJob,
     onFinish: finishAddPapers,
-    onSaveGroupItems: async (uid, items) => {
-      const result = await api.saveGroupItems(uid, items);
-      const p = paper(uid);
-      if (p) p.groupItems = result.items;
-      return result.items;
-    },
     findByPmid: pmid => S.papers.find(p => p.pmid === pmid) || null,
     config: S.config,
     canExtract: !!S.permissions.extract,
@@ -216,14 +211,7 @@ function wireHeader() {
     const files = [...e.target.files]; e.target.value = "";
     await importJson(files);
   });
-  const dbtn = $("#downloadbtn"), menu = $("#downloadmenu");
-  dbtn.onclick = () => menu.hidden = !menu.hidden;
-  document.addEventListener("click", e => {
-    if (!e.target.closest(".menu-wrap")) menu.hidden = true;
-  });
-  menu.querySelectorAll("button").forEach(b => {
-    b.onclick = () => { downloadFile(api.exportUrl(b.dataset.fmt)); menu.hidden = true; };
-  });
+  $("#downloadbtn").onclick = () => downloadFile(api.exportUrl("csv"));
 }
 
 // Collapsible documents pane, resizable extraction pane, restore persisted layout.
@@ -287,11 +275,26 @@ async function uploadPdfs(files, opts) {
 const tracked = new Set();   // job ids already followed by main.js
 
 function trackJob(job, { quietFirst = false } = {}) {
-  if (!job || tracked.has(job.id)) return job;
+  if (!job) return job;
+  const curateRefs = j => (
+    j && j.kind === "extract" && j.params && j.params.stage === "curate"
+      ? (j.items || []).map(it => it.ref) : []
+  );
+  const markCurating = j => {
+    let activeChanged = false;
+    for (const uid of curateRefs(j)) {
+      if (!S.curatingUids.has(uid)) activeChanged = true;
+      S.curatingUids.add(uid);
+    }
+    if (activeChanged && curateRefs(j).includes(S.activeUid)) renderRight();
+  };
+  if (isActive(job)) markCurating(job);
+  if (tracked.has(job.id)) return job;
   tracked.add(job.id);
   const handled = new Set();   // item seqs already folded in
   let first = quietFirst;
   const unfollow = followJob(job.id, j => {
+    if (isActive(j)) markCurating(j);
     const items = j.items;
     if (!items) return;          // a seed from the job list: wait for the first poll
     const fresh = items.filter(it =>
@@ -302,11 +305,14 @@ function trackJob(job, { quietFirst = false } = {}) {
     if (first) { first = false; }
     else if (j.kind === "import") {
       if (fresh.some(it => it.outcome === "added" || it.outcome === "added_abstract")) refreshPapers();
+    } else if (j.kind === "extract" && j.params && j.params.stage === "discover") {
+      if (fresh.some(it => it.outcome === "identified")) refreshPapers();
     } else if (j.kind === "extract") {
       const uids = new Set(fresh.map(it => (it.result && it.result.uid) || it.ref));
       uids.forEach(uid => reloadRuns(uid));
     }
     if (!isActive(j)) {
+      curateRefs(j).forEach(uid => S.curatingUids.delete(uid));
       unfollow();
       tracked.delete(j.id);
       toast(jobSummary(j));
@@ -327,9 +333,9 @@ function jobSummary(j) {
   return `${what} finished` + (bits.length ? ` — ${bits.join(" · ")}` : "");
 }
 
-// A manager reloading mid-import should still see the papers land.
+// Any member reloading while a job is active should see its result land. This
+// matters now that an assignee can start pass 2.
 async function resumeJobs() {
-  if (!S.permissions.manage) return;
   try {
     const { jobs } = await api.listJobs();
     (jobs || []).filter(isActive).forEach(j => trackJob(j, { quietFirst: true }));
@@ -340,11 +346,10 @@ async function startImportJob(pmids) {
   return trackJob(await api.createJob({ kind: "import", refs: pmids }));
 }
 
-async function startExtractJob({ uids, models, parseEngine }) {
+async function startExtractJob({ uids, stage }) {
   return trackJob(await api.createJob({
-    kind: "extract", refs: uids, models,
+    kind: "extract", refs: uids, stage,
     promptId: S.config.defaults.promptId,
-    parseEngine: parseEngine || S.config.defaults.parseEngine,
     force: false,
   }));
 }
@@ -373,7 +378,10 @@ function mergePapers(papers) {
   // The open paper changed hands or state (someone else's action): redraw it
   // so its read-only state is right. Otherwise leave the editor alone.
   if (before && after && (before.assigneeId !== after.assigneeId
-      || before.curationStatus !== after.curationStatus || before.pmidStatus !== after.pmidStatus)) {
+      || before.curationStatus !== after.curationStatus || before.pmidStatus !== after.pmidStatus
+      || before.groupItemsDiscovered !== after.groupItemsDiscovered
+      || before.groupItemsReviewed !== after.groupItemsReviewed
+      || JSON.stringify(before.groupItems || []) !== JSON.stringify(after.groupItems || []))) {
     renderBar(); renderRight(); recomputeMatches();
   }
 }
@@ -463,10 +471,7 @@ function canSetup(p) {
 }
 
 function updateGlobalStat() {
-  // "resolved", not "paired": a paper deliberately marked as having no PubMed
-  // ID is fully identified and ready to curate.
-  const resolved = S.papers.filter(p => p.pmidStatus !== "pending").length;
-  $("#globalstat").textContent = S.papers.length ? `${resolved}/${S.papers.length}` : "—";
+  // Intentionally empty: the old resolved/total navbar count was removed.
 }
 
 /* ---------------- select + render a paper ---------------- */
@@ -499,11 +504,8 @@ async function selectPaper(uid) {
   ph.style.display = "none";
   ph.classList.remove("abstract-only");
   if (p.hasPdf === false) {
-    viewer.clear();
-    ph.style.display = "flex";
-    ph.classList.add("abstract-only");
-    ph.querySelector(".big").textContent = "Abstract only — no full-text PDF available";
-    ph.querySelector(".hint").textContent = p.abstractText || "(no abstract stored)";
+    viewer.loadText(p.abstractText || "(no abstract stored)");
+    recomputeMatches();
     return;
   }
   try {
@@ -521,7 +523,8 @@ async function selectPaper(uid) {
 function activeModelId(p) {
   const runs = S.runsByUid[p.uid] || {};
   const ids = Object.keys(runs);
-  let cur = S.activeModelByUid[p.uid];
+  let cur = S.config && S.config.defaults && S.config.defaults.model;
+  if (!cur || !runs[cur]) cur = S.activeModelByUid[p.uid];
   if (!cur || !runs[cur]) cur = ids[0] || null;
   S.activeModelByUid[p.uid] = cur;
   return cur;
@@ -557,9 +560,8 @@ function renderRight() {
   // extract panel lives above the column header (index.html #extractpanel), not in the scrolling body
   setExtractPanel(p);
 
-  // The project's one repeating group (if any) needs its row identity DECLARED
-  // by the curator before extraction can use it at all (server/extraction.py)
-  // — so this has to be visible whether or not a run exists yet.
+  // A repeating group uses a two-pass flow: AI discovers identifiers, then the
+  // assignee reviews them before starting the full feature extraction.
   const groupDef = (S.config.features || []).find(f => f.type === "group");
   if (groupDef) {
     const gi = renderGroupItemsPanel(p, groupDef);
@@ -570,9 +572,23 @@ function renderRight() {
   const runs = S.runsByUid[p.uid] || {};
   if (!Object.keys(runs).length) {
     const box = el("div", "no-runs");
-    if (S.permissions.extract) {
+    if (groupDef) {
+      const message = !p.groupItemsDiscovered
+        ? "A project manager starts identifier discovery."
+        : !p.groupItemsReviewed
+          ? "Waiting for the assignee to review the identified entries above."
+          : S.curatingUids.has(p.uid)
+            ? "AI curation is running…"
+            : "The assigned curator can start AI curation above.";
+      box.appendChild(el("div", null, message));
+      if (S.permissions.extract && !p.groupItemsDiscovered) {
+        const b = el("button", "btn primary no-runs-btn", "Run identifier discovery…");
+        b.onclick = openExtractModal;
+        box.appendChild(b);
+      }
+    } else if (S.permissions.extract) {
       box.appendChild(el("div", null, "No AI runs yet."));
-      const b = el("button", "btn primary no-runs-btn", "Run extraction…");
+      const b = el("button", "btn primary no-runs-btn", "Run AI curation…");
       b.onclick = openExtractModal;
       box.appendChild(b);
     } else {
@@ -593,11 +609,9 @@ function renderRight() {
   renderFeatureCards(run);
 }
 
-// ---------------- group row identity (curator-declared, not AI-extracted) ---
-// A project's one repeating group needs to know WHICH rows exist before
-// extraction can fill in values for them (server/extraction.py refuses to run
-// otherwise) — this is the "either when uploading the pmid or after the pdf is
-// loaded" entry point for the latter; the former lives in addPapersModal.js.
+// ----------------------- reviewed repeat-group identity --------------------
+// Pass 1 proposes which rows exist. The assigned curator corrects and approves
+// this list before pass 2 can fill the values for those rows.
 function groupItemLabelsFor(p) {
   const out = {};
   for (const it of (p && p.groupItems) || []) out[it.rowId] = it.label;
@@ -622,10 +636,17 @@ async function declareGroupItem(p, label) {
 
 function renderGroupItemsPanel(p, groupDef) {
   const wrap = el("div", "gi-panel");
-  wrap.appendChild(el("div", "gi-head", groupDef.label || groupDef.name));
+  const title = groupDef.label || groupDef.name;
+  wrap.appendChild(el("div", "gi-head", p.groupItemsReviewed ? `${title} · reviewed` : title));
   if (groupDef.description) wrap.appendChild(el("div", "gi-desc", groupDef.description));
-  wrap.appendChild(el("div", "gi-hint",
-    "Declare the rows this paper reports before running extraction — the AI fills in values for each one, it does not invent them."));
+  if (!p.groupItemsDiscovered) {
+    wrap.appendChild(el("div", "gi-hint",
+      "Pass 1 has not run yet. A project manager starts identifier discovery; the assignee reviews the result here."));
+    return wrap;
+  }
+  wrap.appendChild(el("div", "gi-hint", p.groupItemsReviewed
+    ? "This approved list was used for AI curation."
+    : "Review the AI-identified entries. IDs may be dbSNP, EVA, HGVS, haplotypes, or another format used by the paper."));
 
   const runCount = Object.keys(S.runsByUid[p.uid] || {}).length;
   p.groupItems = p.groupItems || [];
@@ -654,7 +675,55 @@ function renderGroupItemsPanel(p, groupDef) {
   addBtn.onclick = () => list.addRow();
 
   wrap.appendChild(list.el);
-  wrap.appendChild(addBtn);
+  if (p.groupItemsReviewed) {
+    list.el.querySelectorAll("input,button").forEach(node => { node.disabled = true; });
+  } else {
+    wrap.appendChild(addBtn);
+  }
+
+  const runs = Object.values(S.runsByUid[p.uid] || {});
+  const hasUsableRun = runs.some(run => run.status !== "failed");
+  if (p.groupItemsReviewed && canEdit(p, S.me) && !hasUsableRun) {
+    if (S.curatingUids.has(p.uid)) {
+      wrap.appendChild(el("div", "gi-hint", "Pass 2 is running…"));
+    } else {
+      const retry = el("button", "btn primary gi-review",
+        runs.length ? "Retry AI curation" : "Run AI curation");
+      retry.onclick = async () => {
+        retry.disabled = true;
+        try {
+          await startExtractJob({ uids: [p.uid], stage: "curate" });
+          renderRight();
+        } catch (err) {
+          retry.disabled = false;
+          toast(`Could not start AI curation: ${err.message}`);
+        }
+      };
+      wrap.appendChild(retry);
+    }
+  }
+
+  if (!p.groupItemsReviewed && canEdit(p, S.me)) {
+    const review = el("button", "btn primary gi-review", "Approve identifiers and run AI curation");
+    review.onclick = async () => {
+      review.disabled = true;
+      try {
+        const result = await api.saveGroupItems(p.uid, p.groupItems, true);
+        p.groupItems = result.items;
+        p.groupItemsReviewed = true;
+        p.groupItemsDiscovered = true;
+        await startExtractJob({ uids: [p.uid], stage: "curate" });
+        renderRight();
+        toast("Identifiers approved — AI curation started");
+      } catch (err) {
+        review.disabled = false;
+        toast(`Could not start AI curation: ${err.message}`);
+      }
+    };
+    wrap.appendChild(review);
+  } else if (!p.groupItemsReviewed) {
+    wrap.appendChild(el("div", "gi-hint", "The assigned curator reviews and approves this list."));
+  }
   return wrap;
 }
 
@@ -673,8 +742,6 @@ function setExtractPanel(p) {
   const slot = $("#extractpanel");
   if (!slot) return;
   slot.innerHTML = "";
-  const bar = p && p.pmidStatus !== "pending" ? modelBar(p) : null;
-  if (bar) slot.appendChild(bar);
 }
 
 function viewToggle(run) {
@@ -863,6 +930,8 @@ function evidenceTargets(run) {
 }
 
 function rowTitle(gdef, row) {
+  const declared = groupItemLabelsFor(activePaper())[row.rowId];
+  if (declared) return declared;
   for (const c of gdef.features) {
     if (!c.identifier) continue;
     const v = row.features[c.name] && row.features[c.name].value;
@@ -1066,42 +1135,6 @@ async function markPaperNoPmid(uid, doi) {
   if (i >= 0) S.papers[i] = updated; else S.papers.push(updated);
   renderLeft(); updateGlobalStat();
   return updated;
-}
-
-// Dropdown in the Extraction header: pick which already-run model's curation to
-// view (models with no run yet are listed but disabled).
-// Lives inside .lab, CSS-hidden while expanded (see styles.css).
-function modelSelect(p, runs) {
-  const modelId = activeModelId(p);
-  const sel = el("select", "model-select");
-  for (const m of S.config.models) {
-    const has = !!runs[m.slug];
-    const o = el("option", null, m.label + (has ? "" : " — not run yet"));
-    o.value = m.slug;
-    o.disabled = !has;
-    if (m.slug === modelId) o.selected = true;
-    sel.appendChild(o);
-  }
-  // .lab's own onclick toggles collapse — interacting with the dropdown must not.
-  sel.addEventListener("mousedown", e => e.stopPropagation());
-  sel.addEventListener("click", e => e.stopPropagation());
-  sel.onchange = () => {
-    S.activeModelByUid[p.uid] = sel.value; S.cardIndex = 0; renderRight(); recomputeMatches();
-  };
-  return sel;
-}
-
-// Extraction is an extract job started from the "Add Paper(s)" stepper or the
-// header's "Run extraction…" (managers), so this pane keeps only the per-model
-// result switcher — which model's output you are reading. A finished job's
-// runs arrive through trackJob -> reloadRuns.
-function modelBar(p) {
-  const runs = S.runsByUid[p.uid] || {};
-  if (!Object.keys(runs).length) return null;
-  const bar = el("div", "model-bar");
-  bar.appendChild(el("span", "lab", "Model"));
-  bar.appendChild(modelSelect(p, runs));
-  return bar;
 }
 
 // The stepper closed: land on whatever it produced, so the curator isn't

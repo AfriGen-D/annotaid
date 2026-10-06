@@ -133,12 +133,12 @@ export const api = {
   markNoPmid: (uid, doi) =>
     jpost(P(`/papers/${U(uid)}/identity`), { status: "none", doi }),
 
-  // The curator's own declared row identity for the project's one repeating
-  // group (e.g. which variants/haplotypes this paper reports on) — set BEFORE
-  // extraction, never proposed by the AI. Replaces the list wholesale; the
-  // server reassigns a rowId only for an item it doesn't already recognise.
-  saveGroupItems: (uid, items) =>
-    jpost(P(`/papers/${U(uid)}/group-items`), { items }),
+  // Correct or approve pass 1's proposed repeat-group identifiers. Replaces
+  // the list wholesale; the server preserves rowIds it recognises.
+  saveGroupItems: (uid, items, reviewed) =>
+    jpost(P(`/papers/${U(uid)}/group-items`), {
+      items, ...(reviewed === undefined ? {} : { reviewed }),
+    }),
 
   pdfUrl: (uid) => P(`/pdf/${U(uid)}`),
 
@@ -168,9 +168,6 @@ export const api = {
   assign: (uid, assigneeId) =>
     jpost(P(`/papers/${U(uid)}/assign`), { assigneeId: assigneeId || null }),
   submit: (uid) => jpost(P(`/papers/${U(uid)}/submit`), {}),
-  // status: "excluded" | "unextractable"; the reason is required.
-  exclude: (uid, status, reason) =>
-    jpost(P(`/papers/${U(uid)}/exclude`), { status, reason }),
   reopen: (uid, reason) =>
     jpost(P(`/papers/${U(uid)}/reopen`), reason ? { reason } : {}),
   history: (uid) => jget(P(`/papers/${U(uid)}/history`)),
@@ -178,7 +175,7 @@ export const api = {
   // ---- background jobs: adding papers by PMID and AI extraction run on the
   // server, so closing the modal (or the tab) doesn't stop them. See jobs.js.
   // spec: {kind:"import", refs:[pmid]}
-  //     | {kind:"extract", refs:[uid], models, promptId?, parseEngine?, force?}
+  //     | {kind:"extract", refs:[uid], stage:"discover"|"curate", promptId?, force?}
   createJob: (spec) => jpost(P("/jobs"), spec),
   listJobs: () => jget(P("/jobs")),
   getJob: (jid) => jget(P(`/jobs/${U(jid)}`)),

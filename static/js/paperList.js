@@ -21,8 +21,6 @@ export const STATUS_FILTERS = [
   ["", "All"],
   ["in_progress", "In progress"],
   ["submitted", "Submitted"],
-  ["excluded", "Excluded"],
-  ["unextractable", "Unextractable"],
   ["unassigned", "Unassigned"],
 ];
 

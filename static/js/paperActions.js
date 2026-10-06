@@ -1,7 +1,6 @@
 // Who holds a paper and how far it got — the workflow bar above the PDF.
 //
 //   unassigned --claim / assign--> in_progress --submit--> submitted
-//                                  in_progress --exclude--> excluded | unextractable
 //   finished --reopen (manager)--> in_progress (or unassigned if nobody holds it)
 //
 // Only the assignee, while the paper is in progress, may edit its curated
@@ -16,10 +15,8 @@ export const STATUS_LABEL = {
   unassigned: "Unassigned",
   in_progress: "In progress",
   submitted: "Submitted",
-  excluded: "Excluded",
-  unextractable: "Unextractable",
 };
-const FINISHED = ["submitted", "excluded", "unextractable"];
+const FINISHED = ["submitted"];
 
 export function statusOf(p) { return (p && p.curationStatus) || "unassigned"; }
 export function isFinished(p) { return FINISHED.includes(statusOf(p)); }
@@ -98,24 +95,11 @@ export function renderPaperBar(container, p, ctx) {
   if (mine && s === "in_progress") {
     const submit = el("button", "btn primary pb-btn", "Submit");
     submit.title = "Finished curating — hand it in (it becomes read only)";
-    const excl = el("button", "btn pb-btn", "Exclude…");
-    excl.title = "Out of scope for this project";
-    const unex = el("button", "btn pb-btn", "Unextractable…");
-    unex.title = "In scope, but the paper doesn't report what we need";
-    const all = [submit, excl, unex];
+    const all = [submit];
     submit.onclick = () => {
       if (!window.confirm("Submit this paper? It becomes read only; a manager can reopen it.")) return;
       act(all, () => api.submit(p.uid));
     };
-    const finish = async (status, title, prompt) => {
-      const reason = await askReason({ title, prompt, confirmLabel: title.replace(/…$/, "") });
-      if (reason == null) return;
-      act(all, () => api.exclude(p.uid, status, reason));
-    };
-    excl.onclick = () => finish("excluded", "Exclude paper",
-      "Why is this paper out of scope? The reason is kept so the decision can be reviewed.");
-    unex.onclick = () => finish("unextractable", "Mark unextractable",
-      "What is missing? The reason is kept so the decision can be reviewed.");
     actions.push(...all);
   }
 
@@ -144,13 +128,6 @@ export function renderPaperBar(container, p, ctx) {
   acts.appendChild(hist);
   bar.appendChild(acts);
   container.appendChild(bar);
-
-  if (p.statusReason && (s === "excluded" || s === "unextractable")) {
-    const r = el("div", "pb-reason");
-    r.appendChild(el("span", "pb-reason-lab", "Reason: "));
-    r.appendChild(document.createTextNode(p.statusReason));
-    container.appendChild(r);
-  }
 
   const ro = readOnlyReason(p, me, users);
   if (ro) container.appendChild(el("div", "ro-banner", ro));
@@ -195,8 +172,6 @@ const ACTION_TEXT = {
     (e.fromAssigneeName ? ` (from ${e.fromAssigneeName})` : ""),
   unassign: e => "returned it to the pool" + (e.fromAssigneeName ? ` (from ${e.fromAssigneeName})` : ""),
   submit: () => "submitted it",
-  excluded: () => "excluded it",
-  unextractable: () => "marked it unextractable",
   reopen: e => "reopened it" + (e.fromStatus ? ` (was ${STATUS_LABEL[e.fromStatus] || e.fromStatus})` : ""),
 };
 

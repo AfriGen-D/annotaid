@@ -19,23 +19,15 @@
   <a class="proj-chip" id="projectChip" href="/" title="Back to all projects">…</a>
   <span class="sub" id="subtitle"></span>
   <span class="spacer"></span>
-  <span class="gstat"><span id="globalstat">—</span><span class="l">papers</span></span>
   <!-- Manager-only controls start hidden; main.js shows them from `permissions`. -->
   <button class="btn load" id="addPdfBtn" hidden>Add Paper(s)</button>
   <button class="btn" id="extractBtn" hidden title="Run AI extraction on the open paper or every paper lacking a run">Run extraction…</button>
   <label class="btn" id="importbtn" hidden>Import JSON
     <input type="file" id="importin" multiple accept=".json,application/json" hidden>
   </label>
-  <div class="menu-wrap" id="downloadwrap" hidden>
-    <button class="btn primary" id="downloadbtn">Download ▾</button>
-    <div class="menu" id="downloadmenu" hidden>
-      <button data-fmt="csv">Download CSV <span class="mhint">paste into sheet</span></button>
-      <button data-fmt="json">Download audit JSON <span class="mhint">benchmarking</span></button>
-    </div>
-  </div>
+  <button class="btn primary" id="downloadbtn" hidden>Download CSV</button>
   <button class="btn" id="jobsBtn" hidden title="Background imports and extraction runs">Jobs</button>
   <button class="btn" id="teamBtn" hidden title="Members and invite links">Team</button>
-  <span id="userMenu"></span>
 </header>
 
 <main>

@@ -9,7 +9,12 @@ import { openDialog, shortTime } from "./dialog.js";
 import { isActive, importItemView, extractItemView, jobProgress } from "./jobs.js";
 
 const POLL_MS = 2000;
-const KIND = { import: "Import by PMID", extract: "AI extraction" };
+function kindLabel(job) {
+  if (job.kind === "import") return "Import by PMID";
+  return job.params && job.params.stage === "discover"
+    ? "Identify repeat-group entries"
+    : "AI curation";
+}
 const STATE = { queued: "queued", running: "running", done: "done", failed: "failed", cancelled: "cancelled" };
 
 /**
@@ -67,7 +72,7 @@ export function openJobsPanel(ctx) {
   function jobRow(job, items) {
     const wrap = el("div", "job");
     const row = el("div", "job-row");
-    row.appendChild(el("span", "job-kind", KIND[job.kind] || job.kind));
+    row.appendChild(el("span", "job-kind", kindLabel(job)));
     row.appendChild(el("span", "bp-state job-st " + toneOf(job), STATE[job.state] || job.state));
 
     const { finished, total } = jobProgress(job);

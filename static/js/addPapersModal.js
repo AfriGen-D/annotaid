@@ -18,11 +18,9 @@
 // folds the results in, and the Jobs panel shows where it got to.
 //
 // The same modal, opened with `bulk`, is just the extraction step: run the
-// chosen models over the open paper or every paper still lacking a run.
+// server's configured AI over the open paper or every paper still waiting.
 import { el } from "./dom.js";
 import { parsePmidText, describeParse } from "./pmidText.js";
-import { parsePmidVariantText, describeVariantParse } from "./variantPmidText.js";
-import { renderGroupItemsList } from "./groupItemsList.js";
 import { followJob, isActive, importItemView, extractItemView, jobProgress } from "./jobs.js";
 
 const ROOT_ID = "addPdfModal";
@@ -42,7 +40,6 @@ const STEP_LABEL = {
   upload: "Upload PDFs",
   ids: "PubMed IDs",
   fetching: "Fetching",
-  variants: "Row IDs",
   extract: "AI extraction",
 };
 
@@ -56,10 +53,7 @@ function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
  * onUpload(files, {pmid}) -> Promise<paper[]>
  * onConfirmPmid(uid, pmid) -> Promise<paper>
  * onNoPmid(uid, doi) -> Promise<paper>            doi may be ""
- * onStartExtract({uids, models, parseEngine}) -> Promise<job>   one extract job
- * onSaveGroupItems(uid, items) -> Promise<items>  the curator's declared row
- *   identity for the project's one repeating group — see server/extraction.py.
- *   Only called if the project's config actually has a group.
+ * onStartExtract({uids, stage}) -> Promise<job>   one extraction-pass job
  * onFinish(papers) -> void      called once when the stepper closes
  * findByPmid(pmid) -> paper|null
  * config
@@ -70,7 +64,7 @@ function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 export function openAddPapersModal(opts) {
   const {
     onStartImport, onRetryJob, onCancelJob, resolvePaper, onUpload, onConfirmPmid,
-    onNoPmid, onStartExtract, onSaveGroupItems, onFinish, findByPmid, config,
+    onNoPmid, onStartExtract, onFinish, findByPmid, config,
   } = opts;
   const bulk = opts.bulk || null;
   const canExtract = opts.canExtract !== false;
@@ -91,14 +85,10 @@ export function openAddPapersModal(opts) {
     closed: false,
     papers: new Map(), // uid -> paper, everything this run produced
     uploadHint: null,  // pmid the manual-upload detour is for
-    idsMode: "plain",  // "plain" | "variant" — which paste format the ids step is reading
-    groupItemsByUid: new Map(),   // uid -> [{rowId, label}], drafted here, saved in "variants"
   };
 
-  // The step after intake (upload / fetching) is "variants" only when there is
-  // a group to declare rows for at all — otherwise it would be an empty step
-  // nobody can do anything with.
-  function gotoAfterIntake() { goto(groupDef ? "variants" : "extract"); }
+  // Repeat-group identifiers now come from AI pass 1, after the paper exists.
+  function gotoAfterIntake() { goto("extract"); }
 
   const root = document.getElementById(ROOT_ID);
   root.innerHTML = "";
@@ -122,10 +112,9 @@ export function openAddPapersModal(opts) {
   stepper.hidden = !!bulk;          // a one-step chain is not a stepper
 
   function chain() {
-    const variants = groupDef ? ["variants"] : [];
     if (st.path === "extract") return ["extract"];
-    if (st.path === "pdf") return ["source", "upload", ...variants, "extract"];
-    if (st.path === "pmid") return ["source", "ids", "fetching", ...variants, "extract"];
+    if (st.path === "pdf") return ["source", "upload", "extract"];
+    if (st.path === "pmid") return ["source", "ids", "fetching", "extract"];
     return ["source", "extract"];
   }
 
@@ -204,41 +193,6 @@ export function openAddPapersModal(opts) {
 
   const PLAIN_PLACEHOLDER =
     "26751406, 31452104\n29875302 12491487\n\nSeparate with spaces, tabs, commas, semicolons or new lines.";
-  const VARIANT_PLACEHOLDER =
-    "33915198 - rs1800544, rs553668\n33622083 rs35599367\n34175889 - HLA-B*15:02, HLA-B*56:02"
-    + "\n\nOne paper per line: PMID first, then its variant/haplotype ids"
-    + " (dash or space after the PMID, ids separated by commas or spaces).";
-
-  // Only worth offering if this project actually has somewhere to put the ids
-  // — a project with no repeating group has no "Row IDs" step to feed.
-  let modeToggle = null;
-  if (groupDef) {
-    modeToggle = el("div", "sub-tabs ids-mode");
-    const modePlain = el("button", "sub-tab on", "Plain PMIDs");
-    const modeVariant = el("button", "sub-tab",
-      `PMID + ${groupDef.label || groupDef.name} IDs`);
-    modeToggle.appendChild(modePlain);
-    modeToggle.appendChild(modeVariant);
-    idsPane.appendChild(modeToggle);
-
-    const setMode = mode => {
-      if (st.idsMode === mode) return;
-      if (ta.value.trim() && !window.confirm(
-        "Switching formats clears what you've typed here. Continue?"
-      )) return;
-      st.idsMode = mode;
-      modePlain.classList.toggle("on", mode === "plain");
-      modeVariant.classList.toggle("on", mode === "variant");
-      ta.value = "";
-      ta.placeholder = mode === "variant" ? VARIANT_PLACEHOLDER : PLAIN_PLACEHOLDER;
-      fileOk.hidden = true; fileErr.hidden = true;
-      recount();
-      if (!st.closed) ta.focus();
-    };
-    modePlain.onclick = () => setMode("plain");
-    modeVariant.onclick = () => setMode("variant");
-  }
-
   const idTabs = el("div", "sub-tabs");
   const tabPaste = el("button", "sub-tab on", "Paste IDs");
   const tabFile = el("button", "sub-tab", "From a file");
@@ -302,26 +256,14 @@ export function openAddPapersModal(opts) {
   tabPaste.onclick = () => showIdTab("paste");
   tabFile.onclick = () => showIdTab("file");
 
-  // In "variant" mode `parsed` is a parsePmidVariantText() result instead —
-  // pmids()/describeCurrent() below are what the rest of this step reads, so
-  // everywhere else stays mode-agnostic.
   let parsed = { ids: [], invalid: [], duplicates: 0, total: 0 };
-  function parsedPmids() {
-    return st.idsMode === "variant" ? parsed.entries.map(e => e.pmid) : parsed.ids;
-  }
-  function variantIdsFor(pmid) {
-    if (st.idsMode !== "variant") return [];
-    const e = parsed.entries.find(x => x.pmid === pmid);
-    return e ? e.variantIds : [];
-  }
+  function parsedPmids() { return parsed.ids; }
   function recount() {
-    parsed = st.idsMode === "variant" ? parsePmidVariantText(ta.value) : parsePmidText(ta.value);
+    parsed = parsePmidText(ta.value);
     const n = parsedPmids().length;
     // Nothing typed yet is not a state worth narrating — the disabled Fetch
     // button already says everything.
-    count.textContent = parsed.total
-      ? (st.idsMode === "variant" ? describeVariantParse(parsed) : describeParse(parsed))
-      : "";
+    count.textContent = parsed.total ? describeParse(parsed) : "";
     fetchBtn.disabled = n === 0 || n > MAX_JOB;
     fetchBtn.textContent = n === 0 ? "Fetch"
       : `Fetch ${plural(n, "paper")}${n > SOFT_CAP && n <= MAX_JOB ? " anyway" : ""}`;
@@ -468,7 +410,7 @@ export function openAddPapersModal(opts) {
   async function acceptDetour(files) {
     const pmid = st.uploadHint;
     const papers = await onUpload(files, { pmid });
-    papers.forEach(p => { st.papers.set(p.uid, p); if (pmid) stashVariantIds(p.uid, pmid); });
+    papers.forEach(p => { st.papers.set(p.uid, p); });
     if (pmid && papers.length) {
       const r = st.rows.get(pmid);
       if (r) r.uploaded = true;   // the job's verdict no longer applies to this row
@@ -584,23 +526,15 @@ export function openAddPapersModal(opts) {
     return n + st.settledBefore;
   }
 
-  // Drafts this pmid's declared ids (from the "PMID + variant IDs" paste
-  // format) against the paper's uid — not saved yet, just carried forward to
-  // the "variants" step, which is where onSaveGroupItems actually persists it.
-  function stashVariantIds(uid, pmid) {
-    const ids = variantIdsFor(pmid);
-    if (ids.length) st.groupItemsByUid.set(uid, ids.map(label => ({ rowId: null, label })));
-  }
-
   // A job item that produced (or found) a paper: carry it into the later steps.
   function adopt(pmid, uid) {
     if (!uid) {
       const existing = findByPmid && findByPmid(pmid);
-      if (existing) { st.papers.set(existing.uid, existing); stashVariantIds(existing.uid, pmid); }
+      if (existing) st.papers.set(existing.uid, existing);
       return;
     }
     st.resolving.push(resolvePaper(uid).then(p => {
-      if (p) { st.papers.set(p.uid, p); stashVariantIds(p.uid, pmid); }
+      if (p) st.papers.set(p.uid, p);
     }).catch(() => {}));
   }
 
@@ -666,7 +600,6 @@ export function openAddPapersModal(opts) {
       if (existing) {
         setRow(pmid, { label: "in project", tone: "dup", msg: "already in this project" });
         st.papers.set(existing.uid, existing);
-        stashVariantIds(existing.uid, pmid);
         st.localDone++;
       } else todo.push(pmid);
     }
@@ -778,102 +711,27 @@ export function openAddPapersModal(opts) {
   upBack.onclick = () => { st.path = null; goto("source"); };
   upNext.onclick = () => gotoAfterIntake();
 
-  /* ================= STEP: variants (curator-declared group row ids) ====== */
-  // Only reachable when groupDef is set (see chain()) — the AI fills in values
-  // for whatever rows are declared here, it never invents or names one itself
-  // (server/extraction.py). Pre-filled from the "PMID + variant IDs" paste
-  // format when that was used; blank and editable either way.
-  const variantsPane = el("div", "modal-pane");
-  variantsPane.hidden = true;
-  body.appendChild(variantsPane);
-
-  function renderVariantsStep() {
-    variantsPane.innerHTML = "";
-    const papers = [...st.papers.values()];
-
-    variantsPane.appendChild(el("div", "modal-lab",
-      `Declare ${groupDef.label || groupDef.name} IDs`));
-    variantsPane.appendChild(el("div", "modal-hint",
-      "One list per paper — the AI fills in values for each id you declare here, "
-      + "it does not invent or name the rows itself. You can also add or edit these "
-      + "later, from the paper's own curation view."));
-
-    if (!papers.length) {
-      variantsPane.appendChild(el("div", "modal-hint", "No papers were added yet."));
-    }
-
-    const cards = el("div", "variant-cards");
-    for (const p of papers) {
-      const items = st.groupItemsByUid.get(p.uid) || [];
-      st.groupItemsByUid.set(p.uid, items);   // same array reused across re-renders
-
-      const card = el("div", "variant-card");
-      const head = el("div", "variant-card-head");
-      head.appendChild(el("span", "bp-id", p.pmid || p.filename));
-      card.appendChild(head);
-
-      const list = renderGroupItemsList(items, {});
-      card.appendChild(list.el);
-
-      const addBtn = el("button", "btn gi-add", "+ Add entry");
-      addBtn.onclick = () => list.addRow();
-      card.appendChild(addBtn);
-
-      cards.appendChild(card);
-    }
-    variantsPane.appendChild(cards);
-
-    const status = el("div", "modal-status err");
-    status.hidden = true;
-    variantsPane.appendChild(status);
-
-    const acts = el("div", "step-actions");
-    const back = el("button", "btn", "Back");
-    back.onclick = () => goto(st.path === "pdf" ? "upload" : "fetching");
-    const cont = el("button", "btn primary", "Continue");
-    cont.onclick = async () => {
-      if (!onSaveGroupItems) { goto("extract"); return; }
-      cont.disabled = true; back.disabled = true; status.hidden = true;
-      try {
-        await Promise.all(papers.map(async p => {
-          const saved = await onSaveGroupItems(p.uid, st.groupItemsByUid.get(p.uid) || []);
-          st.groupItemsByUid.set(p.uid, saved);
-        }));
-        goto("extract");
-      } catch (err) {
-        status.textContent = (err && err.message) || "Could not save one or more entries.";
-        status.hidden = false;
-        cont.disabled = false; back.disabled = false;
-      }
-    };
-    acts.appendChild(back); acts.appendChild(cont);
-    variantsPane.appendChild(acts);
-  }
-
   /* ================= STEP: extract ================= */
   const extractPane = el("div", "modal-pane");
   extractPane.hidden = true;
   body.appendChild(extractPane);
 
-  // scope: bulk mode only — "current" (the open paper) | "lacking" (every
-  // paper without a run for at least one of the chosen models).
-  const exState = { checks: [], job: null, unfollow: null,
+  // scope: bulk mode only — "current" (the open paper) | "lacking".
+  const exState = { job: null, unfollow: null,
                     scope: bulk && bulk.currentUid ? "current" : "lacking" };
+  const extractionStage = groupDef ? "discover" : "curate";
 
-  function chosenModels() { return exState.checks.filter(c => c.checked).map(c => c.value); }
-
-  // The papers the Extract button will send, given the models ticked now.
+  // The papers this extraction pass will send.
   function extractTargets() {
     if (!bulk) return [...st.papers.values()].filter(p => p.pmidStatus !== "pending");
     const all = bulk.papers().filter(p => p.pmidStatus !== "pending");
     if (exState.scope === "current") return all.filter(p => p.uid === bulk.currentUid);
-    const models = chosenModels();
-    return all.filter(p => models.some(m => !bulk.hasRun(p.uid, m)));
+    if (extractionStage === "discover") return all.filter(p => !p.groupItemsDiscovered);
+    return all.filter(p => !bulk.hasRun(p.uid, config.defaults.model));
   }
 
   function renderExtractStep() {
     extractPane.innerHTML = "";
-    exState.checks = [];
 
     const papers = bulk ? [] : [...st.papers.values()];
     if (!bulk && !papers.length) {
@@ -966,19 +824,7 @@ export function openAddPapersModal(opts) {
     const heading = el("div", "modal-lab");
     extractPane.appendChild(heading);
 
-    const picks = el("div", "model-picks");
-    for (const m of config.models) {
-      const lab = el("label");
-      const cb = el("input"); cb.type = "checkbox"; cb.value = m.slug; cb.checked = true;
-      lab.appendChild(cb);
-      lab.appendChild(el("span", null, m.label));
-      if (!m.supportsStructuredOutput) lab.appendChild(el("span", "so", "prompt-only"));
-      picks.appendChild(lab); exState.checks.push(cb);
-    }
-    extractPane.appendChild(picks);
-
-    // Bulk: which papers. Counted live, since "lacking a run" depends on the
-    // models ticked above.
+    // Bulk: identify the open paper, or every paper still waiting for pass 1.
     let scopeBox = null;
     if (bulk) {
       scopeBox = el("div", "ex-scope");
@@ -993,25 +839,13 @@ export function openAddPapersModal(opts) {
         return span;
       };
       if (bulk.currentUid) opt("current", "The open paper");
-      exState.lackingLabel = opt("lacking", "Every paper without a run for the chosen models");
+      exState.lackingLabel = opt("lacking", extractionStage === "discover"
+        ? "Every paper awaiting identifier discovery"
+        : "Every paper without AI curation");
       extractPane.appendChild(scopeBox);
     }
 
-    const row = el("div", "extract-row");
-    const sel = el("select");
-    for (const e of config.parseEngines) {
-      const o = el("option", null, e + (e === "mistral-ocr" ? " (paid)" : e === "pdf-text" ? " (free)" : ""));
-      o.value = e;
-      if (e === config.defaults.parseEngine) o.selected = true;
-      sel.appendChild(o);
-    }
-    row.appendChild(sel);
-    extractPane.appendChild(row);
-
     const engineWarn = el("div", "engine-warn");
-    const syncWarn = () => engineWarn.textContent = sel.value === "mistral-ocr"
-      ? "mistral-ocr is paid and forwards at most ~8 images per PDF." : "";
-    sel.onchange = syncWarn; syncWarn();
     extractPane.appendChild(engineWarn);
 
     const exProgress = el("div", "batch-progress");
@@ -1034,7 +868,9 @@ export function openAddPapersModal(opts) {
     extractPane.appendChild(acts);
     doneBtn.onclick = close;
     extractPane.appendChild(el("div", "modal-hint",
-      "Extraction runs on the server. You can close this window — it keeps going, and the results appear on each paper as they finish."));
+      extractionStage === "discover"
+        ? "Pass 1 identifies repeat-group IDs. It runs on the server; the assignee reviews each list before full AI curation."
+        : "AI curation runs on the server. You can close this window — it keeps going."));
 
     if (unconfirmed.length) {
       extractPane.appendChild(el("div", "modal-hint",
@@ -1045,18 +881,23 @@ export function openAddPapersModal(opts) {
       if (exState.job && isActive(exState.job)) return;   // mid-run: leave the button alone
       const n = extractTargets().length;
       if (bulk) {
-        const lacking = bulk.papers().filter(p => p.pmidStatus !== "pending")
-          .filter(p => chosenModels().some(m => !bulk.hasRun(p.uid, m))).length;
-        exState.lackingLabel.textContent =
-          `Every paper without a run for the chosen models (${lacking})`;
-        heading.textContent = "Run AI extraction";
+        const lacking = extractionStage === "discover"
+          ? bulk.papers().filter(p => p.pmidStatus !== "pending" && !p.groupItemsDiscovered).length
+          : bulk.papers().filter(p => p.pmidStatus !== "pending" && !bulk.hasRun(p.uid, config.defaults.model)).length;
+        exState.lackingLabel.textContent = extractionStage === "discover"
+          ? `Every paper awaiting identifier discovery (${lacking})`
+          : `Every paper without AI curation (${lacking})`;
+        heading.textContent = extractionStage === "discover" ? "Pass 1 · Identify repeat-group entries" : "Run AI curation";
       } else {
-        heading.textContent = `Run AI extraction — ${plural(n, "paper")} ready`;
+        heading.textContent = extractionStage === "discover"
+          ? `Pass 1 · Identify entries in ${plural(n, "paper")}`
+          : `Run AI curation — ${plural(n, "paper")} ready`;
       }
-      runBtn.textContent = n ? `Extract ${plural(n, "paper")}` : "Nothing to extract";
-      runBtn.disabled = !n || !!unconfirmed.length || !chosenModels().length;
+      runBtn.textContent = n
+        ? (extractionStage === "discover" ? `Identify entries in ${plural(n, "paper")}` : `Curate ${plural(n, "paper")}`)
+        : "Nothing to run";
+      runBtn.disabled = !n || !!unconfirmed.length;
     }
-    exState.checks.forEach(cb => { cb.onchange = refresh; });
     refresh();
 
     const nodes = new Map();   // uid -> {s, m}
@@ -1090,8 +931,6 @@ export function openAddPapersModal(opts) {
     }
 
     runBtn.onclick = async () => {
-      const models = chosenModels();
-      if (!models.length) { engineWarn.textContent = "Pick at least one model."; return; }
       const targets = extractTargets();
       if (!targets.length) { refresh(); return; }
       runBtn.disabled = true;
@@ -1118,7 +957,7 @@ export function openAddPapersModal(opts) {
       try {
         // ONE job for every paper: the server runs a few at a time, and keeps
         // going if this window closes.
-        const job = await onStartExtract({ uids: targets.map(p => p.uid), models, parseEngine: sel.value });
+        const job = await onStartExtract({ uids: targets.map(p => p.uid), stage: extractionStage });
         if (exState.unfollow) exState.unfollow();
         exState.job = job;
         exState.unfollow = followJob(job.id, onExtractTick, job);
@@ -1138,14 +977,13 @@ export function openAddPapersModal(opts) {
   /* ---------------- navigation ---------------- */
   const PANES = {
     source: sourcePane, ids: idsPane, fetching: fetchPane,
-    upload: uploadPane, variants: variantsPane, extract: extractPane,
+    upload: uploadPane, extract: extractPane,
   };
 
   function goto(step) {
     if (st.closed) return;
     st.step = step;
     for (const [key, pane] of Object.entries(PANES)) pane.hidden = key !== step;
-    if (step === "variants") renderVariantsStep();
     if (step === "extract") renderExtractStep();
     if (step === "ids") setTimeout(() => { if (!st.closed) ta.focus(); }, 30);
     renderStepper();

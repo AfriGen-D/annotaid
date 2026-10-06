@@ -92,6 +92,12 @@ select.small,.admin-table select{border:1px solid var(--line);border-radius:6px;
 .sys-actions{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
 .sys-actions a.btn{text-decoration:none}
 .warn-note{font-size:12px;color:var(--bad);background:var(--bad-bg);border-radius:8px;padding:8px 11px;margin:0 0 14px;max-width:70ch}
+.ai-model-row{display:grid;grid-template-columns:minmax(220px,2fr) minmax(150px,1fr) auto auto;
+  gap:10px;align-items:end;margin-bottom:9px}
+.ai-model-row .auth-field{margin:0}
+.ai-structured{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--ink-soft);padding-bottom:8px}
+.ai-defaults{margin-top:16px}
+@media (max-width:760px){.ai-model-row{grid-template-columns:1fr}.ai-structured{padding-bottom:0}}
 
 /* temporary-password dialog */
 .admin-modal h3{margin:0;font-family:var(--serif);font-weight:500;font-size:18px}

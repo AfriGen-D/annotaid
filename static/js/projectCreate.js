@@ -1,4 +1,4 @@
-// "New project" — a three-step stepper: Details → Features → Review.
+// "New project" — a three-step stepper: Details → Schema → Review.
 //
 // Replaces the placeholder name-and-description dialog. A project manager either
 // defines a feature set here, or imports a configuration document another
@@ -12,7 +12,7 @@ import { api } from "./api.js";
 import { renderFeatureEditor, cleanFeatures, blankLeaf } from "./featureSchemaEditor.js";
 
 const STEPS = ["details", "features", "review"];
-const STEP_LABEL = { details: "Details", features: "Features", review: "Review" };
+const STEP_LABEL = { details: "Details", features: "Schema", review: "Review" };
 
 /**
  * onCreated(project) -> void
@@ -29,9 +29,8 @@ export function openCreateProject({ onCreated, template }) {
     allowNoPmid: false,
     allowAbstractExtraction: false,
     features: [],
-    // Everything except features/settings rides along from the template or the
-    // imported file: models, prompts, parse engines, CSV mapping. The editor
-    // does not expose those, so they must not be silently dropped.
+    // Project-owned prompt/export details ride along from the template or an
+    // imported file. Models and PDF processing stay server-wide.
     carry: baseCarry(template),
     validation: null,
     busy: false,
@@ -209,7 +208,7 @@ export function openCreateProject({ onCreated, template }) {
   /* ------------------------------ features ----------------------------- */
   function drawFeatures() {
     body.appendChild(el("div", "modal-hint",
-      "Each feature is one value a curator records per paper. A repeating group is a set of fields recorded once per entry — one per genetic variant, say."));
+      "First define values that apply once to the whole paper. Then, if needed, add one repeating group for entries such as variants. After PDFs are loaded, AI identifies those entries in pass 1; the assigned curator reviews them before pass 2 extracts these fields."));
 
     body.appendChild(sheetToolbar());
 
@@ -340,7 +339,6 @@ export function openCreateProject({ onCreated, template }) {
     const facts = el("div", "fe-facts");
     facts.appendChild(fact(v && v.paths ? v.paths.length : 0, "values per paper"));
     facts.appendChild(fact(v ? v.groupCount : 0, "repeating groups"));
-    facts.appendChild(fact((st.carry.models || []).length, "models"));
     facts.appendChild(fact(st.allowNoPmid ? "allowed" : "required",
                            "PubMed ID"));
     facts.appendChild(fact(st.allowAbstractExtraction ? "allowed" : "off",
@@ -406,16 +404,13 @@ export function openCreateProject({ onCreated, template }) {
   render();
 }
 
-// Everything a config needs that the feature editor does not edit. Without a
-// prompt and at least one model the server refuses the config, so a blank start
-// still has to inherit those from somewhere.
+// Everything a project config needs that this editor does not edit. AI models
+// and PDF processing are intentionally absent from the project workflow; the
+// superadmin manages those once for the server.
 function baseCarry(doc) {
   const d = doc || {};
   return {
-    models: d.models ? JSON.parse(JSON.stringify(d.models)) : [],
     prompts: d.prompts ? JSON.parse(JSON.stringify(d.prompts)) : [],
-    parseEngines: d.parseEngines ? [...d.parseEngines] : undefined,
-    defaults: d.defaults ? { ...d.defaults } : undefined,
     export: d.export ? JSON.parse(JSON.stringify(d.export)) : undefined,
     settings: d.settings ? { ...d.settings } : {},
   };

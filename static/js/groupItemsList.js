@@ -1,9 +1,5 @@
-// Shared "list of declared ids" editor — the curator's own row identity for a
-// project's one repeating group (server/project_store.load_group_items). Used
-// both in the curation pane (main.js, one paper at a time) and in the "Add
-// Paper(s)" stepper (addPapersModal.js, one per paper being added) — the
-// widget itself has no opinion on when its edits get saved, that is entirely
-// the caller's job via onChange.
+// Shared repeat-group identifier editor. Pass 1 supplies {label, evidence}; the
+// curator can correct the label before approving the list for pass 2.
 //
 // `items` is a live array of {rowId, label} — mutated in place, like every
 // other editor in this codebase (featureSchemaEditor.js, groupEditor.js).
@@ -27,6 +23,12 @@ export function renderGroupItemsList(items, { onChange, onRemove } = {}) {
       };
       row.appendChild(input);
 
+      if (item.evidence) {
+        const quote = el("div", "gi-evidence", `“${item.evidence}”`);
+        quote.title = "Evidence found during identifier discovery";
+        row.appendChild(quote);
+      }
+
       const del = el("button", "fe-icon fe-del", "×");
       del.title = "Remove this entry";
       del.onclick = () => {
@@ -41,7 +43,7 @@ export function renderGroupItemsList(items, { onChange, onRemove } = {}) {
   }
 
   function addRow(label = "") {
-    items.push({ rowId: null, label });
+    items.push({ rowId: null, label, evidence: null });
     draw();
     const inputs = wrap.querySelectorAll("input");
     if (inputs.length) inputs[inputs.length - 1].focus();

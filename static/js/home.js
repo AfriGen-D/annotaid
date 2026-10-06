@@ -5,9 +5,10 @@
 // before they know which project they are in. Keeping them apart also means the
 // back button and deep links to /p/<id> work with no routing machinery.
 import { $, el, toast, downloadFile } from "./dom.js";
-import { api } from "./api.js";
+import { api, setProject } from "./api.js";
 import { openCreateProject } from "./projectCreate.js";
 import { renderUserMenu, toLogin } from "./session.js";
+import { openTeamPanel } from "./teamPanel.js";
 
 const S = { projects: [], global: null, template: null, me: null, canCreate: false };
 
@@ -154,6 +155,21 @@ function cardMenu(p) {
   menu.hidden = true;
 
   if (isManager) {
+    const team = el("button", null, "Manage team");
+    team.type = "button";
+    team.onclick = e => {
+      e.preventDefault(); e.stopPropagation();
+      menu.hidden = true;
+      setProject(p.id);
+      openTeamPanel({
+        account: S.me,
+        me: { id: S.me.id, name: S.me.name, role: p.myRole },
+        onMembers: members => { if (p.stats) p.stats.members = members.length; render(); },
+        onReleased: () => reload(),
+      });
+    };
+    menu.appendChild(team);
+
     const noCuration = !(p.stats && p.stats.confirmed > 0);
     const dlValues = el("button", null, "Download curated values");
     dlValues.type = "button";

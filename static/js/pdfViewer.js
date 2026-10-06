@@ -17,6 +17,7 @@ const state = {
   targets: [],        // {name, evidence, located, rects, pageIdx, partial}
   activeTarget: -1,
   features: [],       // last features passed to computeMatches (for reflow on zoom)
+  sourceLabel: "PDF",
   onActive: null,     // (name) => void
   onNav: null,        // (label) => void
   onMatches: null,    // (results) => void  (fires on initial compute AND zoom reflow)
@@ -58,9 +59,45 @@ function handleSelectionChange() {
 
 export async function load(url) {
   clear();
+  state.sourceLabel = "PDF";
   const buf = await (await fetch(url)).arrayBuffer();
   state.pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   await renderAllPages();
+}
+
+// Abstract-only papers still need the same evidence matching, navigation and
+// selection behavior as a PDF. Build one text page with a character map so the
+// existing matcher and range/highlight code can be reused unchanged.
+export function loadText(text) {
+  clear();
+  state.sourceLabel = "abstract";
+  const box = pagesEl();
+  const wrap = document.createElement("div");
+  wrap.className = "page-wrap abstract-page";
+  const hlLayer = document.createElement("div");
+  hlLayer.className = "hlLayer";
+  const textLayer = document.createElement("div");
+  textLayer.className = "abstract-text-layer";
+  const span = document.createElement("span");
+  const rawText = String(text || "");
+  span.textContent = rawText;
+  textLayer.appendChild(span);
+  wrap.append(hlLayer, textLayer);
+  box.appendChild(wrap);
+  // DOM Range offsets and String.length both use UTF-16 code units. Array
+  // spread uses code points and would shift highlights after emoji or other
+  // astral characters in an abstract.
+  const charMap = Array.from(
+    { length: rawText.length }, (_, local) => ({ spanIndex: 0, local })
+  );
+  const { norm, map } = normalizeWithMap(rawText);
+  const { norm: normDehyph, map: mapDehyph } = normalizeWithMap(rawText, true);
+  state.pageIndex = [{
+    page: 1, wrap, hlLayer, textLayer, rawText, charMap,
+    spans: [{ el: span, start: 0, len: rawText.length }],
+    norm, normMap: map, normDehyph, normDehyphMap: mapDehyph,
+  }];
+  updateZoomLabel();
 }
 
 export function clear() {
@@ -299,7 +336,7 @@ function updateNavLabel() {
   const i = state.activeTarget;
   if (i < 0) { elm.textContent = `${n} evidence span(s)`; return; }
   const t = state.targets[i];
-  const st = t.located ? (t.partial ? "partial" : "found") : "not found in PDF";
+  const st = t.located ? (t.partial ? "partial" : "found") : `not found in ${state.sourceLabel}`;
   const label = `${i + 1}/${n} · ${t.label} · ${st}`;
   elm.textContent = label;
   if (state.onNav) state.onNav(label);
