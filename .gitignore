@@ -10,3 +10,8 @@ dist/
 # Local workshop and presentation materials
 presentation/
 demo-data/
+
+# Generated analysis, backups, and rendered documents
+graphify-out/
+config/*.bak
+docs/*.html
