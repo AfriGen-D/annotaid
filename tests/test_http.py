@@ -407,6 +407,17 @@ def scenarios(ctx, db, base):
     s, js, _ = maya.post(f"/api/projects/{pid}/papers/{u1}/claim")
     check("second claim loses", s == 409 and "Cora" in js["error"], js)
     items = discovered[u1]["groupItems"]
+    s, js, _ = maya.post(f"/api/projects/{pid}/papers/{u1}/group-items",
+                         {"items": items + [{"label": "PM-added-group"}]})
+    check("manager can add an identifier while the assignee reviews",
+          s == 200 and js["items"][-1]["label"] == "PM-added-group", js)
+    items = js["items"]
+    duplicate = {"label": items[0]["label"].upper(), "evidence": "duplicate spelling"}
+    s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/group-items",
+                         {"items": items + [duplicate]})
+    check("group review cannot save a duplicate identifier",
+          s == 200 and len(js["items"]) == len(items), js)
+    items = js["items"]
     s, js, _ = cora.post(f"/api/projects/{pid}/papers/{u1}/group-items",
                          {"items": items, "reviewed": True})
     check("assignee approves the discovered identifiers", s == 200 and js["reviewed"] is True, js)

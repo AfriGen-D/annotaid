@@ -107,19 +107,21 @@ def discover_group_items(
     previous = store.load_group_items(paper["uid"])
     by_label = {}
     for old in previous:
-        by_label.setdefault(old.get("label"), []).append(old.get("rowId"))
+        key = project_store._group_item_key(old.get("label"))
+        by_label.setdefault(key, []).append(old.get("rowId"))
 
     items, seen = [], set()
     for item in raw.get("items") or []:
         if not isinstance(item, dict):
             continue
         label = str(item.get("label") or "").strip()
-        if not label or label in seen:
+        label_key = project_store._group_item_key(label)
+        if not label_key or label_key in seen:
             continue
-        seen.add(label)
+        seen.add(label_key)
         evidence = str(item.get("evidence") or "").strip() or None
         item_out = {"label": label, "evidence": evidence}
-        old_ids = by_label.get(label) or []
+        old_ids = by_label.get(label_key) or []
         if len(old_ids) == 1 and old_ids[0]:
             item_out["rowId"] = old_ids[0]
         items.append(item_out)

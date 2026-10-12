@@ -177,16 +177,36 @@ class ProjectStore:
         treated as new — never trust the client to invent the id an existing
         row keeps; an unrecognised or missing one gets a fresh server id, so
         an item already extracted against keeps its identity across an edit
-        that only reorders or renames its neighbours."""
-        existing_ids = {it.get("rowId") for it in self.load_group_items(uid)}
+        that only reorders or renames its neighbours.
+
+        Labels are unique per paper, case-insensitively. AI discovery already
+        tries to de-duplicate its reply, but this is the storage boundary used
+        by both AI and curator edits, so enforcing it here prevents a race or a
+        hand-entered spelling variant from creating two rows for one entry.
+        When possible, a rediscovered spelling variant keeps the existing row
+        id so extracted values remain attached to the same logical entry.
+        """
+        existing = self.load_group_items(uid)
+        existing_ids = {it.get("rowId") for it in existing}
+        existing_by_label = {}
+        for item in existing:
+            key = _group_item_key(item.get("label"))
+            if key and item.get("rowId"):
+                existing_by_label.setdefault(key, []).append(item["rowId"])
         out = []
+        seen_labels = set()
         for raw in items or []:
             label = str((raw or {}).get("label") or "").strip()
             if not label:
                 continue  # a blank row names nothing — just drop it
+            label_key = _group_item_key(label)
+            if label_key in seen_labels:
+                continue
+            seen_labels.add(label_key)
             rid = (raw or {}).get("rowId")
             if not rid or rid not in existing_ids:
-                rid = util.short_id()
+                old_ids = existing_by_label.get(label_key) or []
+                rid = old_ids[0] if len(old_ids) == 1 else util.short_id()
             evidence = str((raw or {}).get("evidence") or "").strip() or None
             item = {"rowId": rid, "label": label}
             if evidence:
@@ -684,6 +704,11 @@ def _load_group_items_from_row(row) -> list:
         return json.loads(row["group_items_json"] or "[]")
     except json.JSONDecodeError:
         return []
+
+
+def _group_item_key(label) -> str:
+    """Comparison key for one paper's declared repeating-group entries."""
+    return " ".join(str(label or "").split()).casefold()
 
 
 def _run_dict(row, features: dict, groups: dict, with_prompt_text: bool) -> dict:

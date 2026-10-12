@@ -1,5 +1,6 @@
 // "Add Paper(s)" — a horizontal stepper that carries a paper from intake all the
-// way to AI extraction.
+// way to the next AI phase. With a repeating group that phase is explicit
+// group identification; full extraction waits for the assignee's review.
 //
 // The chain branches on the first step, so the steps are deliberately NOT
 // numbered: "I have the PDFs" is three steps, "I have PubMed IDs" is four, and
@@ -17,11 +18,12 @@
 // Closing the modal stops nothing — main.js follows every job it starts and
 // folds the results in, and the Jobs panel shows where it got to.
 //
-// The same modal, opened with `bulk`, is just the extraction step: run the
-// server's configured AI over the open paper or every paper still waiting.
+// The same modal, opened with `bulk`, shows just the applicable AI phase for
+// the open paper or every paper still waiting.
 import { el } from "./dom.js";
 import { parsePmidText, describeParse } from "./pmidText.js";
 import { followJob, isActive, importItemView, extractItemView, jobProgress } from "./jobs.js";
+import { renderGroupItemsList } from "./groupItemsList.js";
 
 const ROOT_ID = "addPdfModal";
 const SOFT_CAP = 100;      // warn above this, never block
@@ -40,6 +42,7 @@ const STEP_LABEL = {
   upload: "Upload PDFs",
   ids: "PubMed IDs",
   fetching: "Fetching",
+  identify: "Identify groups",
   extract: "AI extraction",
 };
 
@@ -54,6 +57,7 @@ function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
  * onConfirmPmid(uid, pmid) -> Promise<paper>
  * onNoPmid(uid, doi) -> Promise<paper>            doi may be ""
  * onStartExtract({uids, stage}) -> Promise<job>   one extraction-pass job
+ * onSaveGroupItems(uid, items) -> Promise<{items}> saves corrections made in review
  * onFinish(papers) -> void      called once when the stepper closes
  * findByPmid(pmid) -> paper|null
  * config
@@ -64,14 +68,15 @@ function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 export function openAddPapersModal(opts) {
   const {
     onStartImport, onRetryJob, onCancelJob, resolvePaper, onUpload, onConfirmPmid,
-    onNoPmid, onStartExtract, onFinish, findByPmid, config,
+    onNoPmid, onStartExtract, onFinish, onSaveGroupItems, findByPmid, config,
   } = opts;
   const bulk = opts.bulk || null;
   const canExtract = opts.canExtract !== false;
   const groupDef = (config.features || []).find(f => f.type === "group") || null;
+  const workflowStep = groupDef ? "identify" : "extract";
 
   const st = {
-    path: bulk ? "extract" : null,   // null | "pdf" | "pmid" | "extract" (bulk)
+    path: bulk ? workflowStep : null, // null | "pdf" | "pmid" | final AI step (bulk)
     step: "source",
     rows: new Map(),   // pmid -> row record (fetch step)
     order: [],
@@ -87,8 +92,9 @@ export function openAddPapersModal(opts) {
     uploadHint: null,  // pmid the manual-upload detour is for
   };
 
-  // Repeat-group identifiers now come from AI pass 1, after the paper exists.
-  function gotoAfterIntake() { goto("extract"); }
+  // Repeat-group projects have a deliberately separate identification phase.
+  // Full extraction happens later, after the assignee reviews these entries.
+  function gotoAfterIntake() { goto(workflowStep); }
 
   const root = document.getElementById(ROOT_ID);
   root.innerHTML = "";
@@ -98,7 +104,9 @@ export function openAddPapersModal(opts) {
   root.appendChild(modal);
 
   const head = el("div", "modal-head");
-  head.appendChild(el("span", null, bulk ? "Run AI extraction" : "Add paper(s)"));
+  head.appendChild(el("span", null, bulk
+    ? (groupDef ? "Identify groups" : "Run AI extraction")
+    : "Add paper(s)"));
   const closeBtn = el("button", "modal-close", "×");
   closeBtn.setAttribute("aria-label", "Close");
   head.appendChild(closeBtn);
@@ -112,10 +120,10 @@ export function openAddPapersModal(opts) {
   stepper.hidden = !!bulk;          // a one-step chain is not a stepper
 
   function chain() {
-    if (st.path === "extract") return ["extract"];
-    if (st.path === "pdf") return ["source", "upload", "extract"];
-    if (st.path === "pmid") return ["source", "ids", "fetching", "extract"];
-    return ["source", "extract"];
+    if (st.path === workflowStep) return [workflowStep];
+    if (st.path === "pdf") return ["source", "upload", workflowStep];
+    if (st.path === "pmid") return ["source", "ids", "fetching", workflowStep];
+    return ["source", workflowStep];
   }
 
   // Progress is carried by the connector lines going green behind you, so there
@@ -711,7 +719,7 @@ export function openAddPapersModal(opts) {
   upBack.onclick = () => { st.path = null; goto("source"); };
   upNext.onclick = () => gotoAfterIntake();
 
-  /* ================= STEP: extract ================= */
+  /* ============== STEP: identify groups / extract ============== */
   const extractPane = el("div", "modal-pane");
   extractPane.hidden = true;
   body.appendChild(extractPane);
@@ -735,7 +743,9 @@ export function openAddPapersModal(opts) {
 
     const papers = bulk ? [] : [...st.papers.values()];
     if (!bulk && !papers.length) {
-      extractPane.appendChild(el("div", "modal-hint", "No papers were added, so there is nothing to extract."));
+      extractPane.appendChild(el("div", "modal-hint", groupDef
+        ? "No papers were added, so there are no groups to identify."
+        : "No papers were added, so there is nothing to extract."));
       const acts = el("div", "step-actions");
       const b = el("button", "btn primary", "Close");
       b.onclick = close;
@@ -810,9 +820,9 @@ export function openAddPapersModal(opts) {
     // Managers only, and only where the server has an OpenRouter key. The
     // papers are in the project either way; someone with access can run it later.
     if (!canExtract) {
-      extractPane.appendChild(el("div", "modal-lab", "AI extraction"));
+      extractPane.appendChild(el("div", "modal-lab", groupDef ? "Group identification" : "AI extraction"));
       extractPane.appendChild(el("div", "modal-hint",
-        "AI extraction isn't available here — it needs a project manager, and the server must have an extraction key configured."));
+        `${groupDef ? "Group identification" : "AI extraction"} isn't available here — it needs a project manager, and the server must have an extraction key configured.`));
       const acts = el("div", "step-actions");
       const b = el("button", "btn primary", "Finish");
       b.onclick = close;
@@ -861,6 +871,97 @@ export function openAddPapersModal(opts) {
     exList.hidden = true;
     extractPane.appendChild(exList);
 
+    // Discovery is useful only if the manager can see and correct what it
+    // found. The assignee gets the same editing controls in the curation
+    // workspace, with evidence links into the paper.
+    const previews = el("div", "group-previews");
+    previews.hidden = true;
+    extractPane.appendChild(previews);
+    const previewCards = new Map();
+
+    function upsertPreview(p) {
+      if (!groupDef || !p || !p.groupItemsDiscovered) return;
+      let card = previewCards.get(p.uid);
+      if (!card) {
+        card = el("div", "group-preview-card");
+        previewCards.set(p.uid, card);
+        previews.appendChild(card);
+      }
+      card.innerHTML = "";
+      card.appendChild(el("div", "group-preview-paper", p.pmid || p.doi || p.filename));
+      const title = el("div", "group-preview-title");
+      card.appendChild(title);
+      p.groupItems = p.groupItems || [];
+
+      function updateTitle() {
+        title.textContent = `${groupDef.label || groupDef.name} · ${p.groupItems.length}`;
+      }
+      updateTitle();
+
+      if (!p.groupItemsReviewed && onSaveGroupItems) {
+        const groupItems = p.groupItems;
+        const message = el("div", "group-preview-message");
+        let saving = false;
+        async function commit() {
+          if (saving) return;
+          saving = true;
+          message.textContent = "Saving…";
+          try {
+            const result = await onSaveGroupItems(p.uid, groupItems);
+            groupItems.splice(0, groupItems.length, ...result.items);
+            p.groupItems = groupItems;
+            editor.redraw();
+            updateTitle();
+            message.textContent = "Saved";
+          } catch (err) {
+            message.textContent = `Could not save: ${err.message}`;
+          } finally {
+            saving = false;
+          }
+        }
+        const editor = renderGroupItemsList(p.groupItems, {
+          onChange: commit,
+          onDuplicate: label => { message.textContent = `“${label}” is already in this group`; },
+          onRemove: item => window.confirm(
+            `Remove “${item.label || "this entry"}” from this paper's identified groups?`),
+        });
+        const add = el("button", "btn gi-add", "+ Add entry");
+        add.type = "button";
+        add.onclick = () => editor.addRow();
+        card.appendChild(editor.el);
+        card.appendChild(add);
+        card.appendChild(message);
+      } else {
+        const items = el("div", "group-preview-items");
+        if (!p.groupItems.length) {
+          items.appendChild(el("div", "group-preview-empty", "No entries identified."));
+        } else {
+          for (const item of p.groupItems) {
+            const row = el("div", "group-preview-item");
+            row.appendChild(el("span", "group-preview-label", item.label));
+            if (item.evidence) row.appendChild(el("span", "group-preview-evidence", `“${item.evidence}”`));
+            items.appendChild(row);
+          }
+        }
+        card.appendChild(items);
+      }
+      previews.hidden = false;
+    }
+
+    function refreshPreviews() {
+      if (!groupDef) return;
+      previews.innerHTML = "";
+      previewCards.clear();
+      let candidates = bulk ? bulk.papers() : [...st.papers.values()];
+      if (bulk && exState.scope === "current") {
+        candidates = candidates.filter(p => p.uid === bulk.currentUid);
+      } else if (bulk) {
+        candidates = candidates.filter(p => !p.groupItemsReviewed);
+      }
+      candidates.forEach(upsertPreview);
+      previews.hidden = !previewCards.size;
+    }
+
     const acts = el("div", "step-actions");
     const runBtn = el("button", "btn primary");
     const doneBtn = el("button", "btn", bulk ? "Close" : "Finish");
@@ -869,7 +970,7 @@ export function openAddPapersModal(opts) {
     doneBtn.onclick = close;
     extractPane.appendChild(el("div", "modal-hint",
       extractionStage === "discover"
-        ? "Pass 1 identifies repeat-group IDs. It runs on the server; the assignee reviews each list before full AI curation."
+        ? "This phase identifies and displays repeat-group entries. Review the list here, or use the evidence-linked list in the curation workspace, before full AI extraction."
         : "AI curation runs on the server. You can close this window — it keeps going."));
 
     if (unconfirmed.length) {
@@ -887,16 +988,17 @@ export function openAddPapersModal(opts) {
         exState.lackingLabel.textContent = extractionStage === "discover"
           ? `Every paper awaiting identifier discovery (${lacking})`
           : `Every paper without AI curation (${lacking})`;
-        heading.textContent = extractionStage === "discover" ? "Pass 1 · Identify repeat-group entries" : "Run AI curation";
+        heading.textContent = extractionStage === "discover" ? "Identify groups" : "Run AI curation";
       } else {
         heading.textContent = extractionStage === "discover"
-          ? `Pass 1 · Identify entries in ${plural(n, "paper")}`
+          ? `Identify groups in ${plural(n, "paper")}`
           : `Run AI curation — ${plural(n, "paper")} ready`;
       }
       runBtn.textContent = n
-        ? (extractionStage === "discover" ? `Identify entries in ${plural(n, "paper")}` : `Curate ${plural(n, "paper")}`)
+        ? (extractionStage === "discover" ? `Identify groups in ${plural(n, "paper")}` : `Curate ${plural(n, "paper")}`)
         : "Nothing to run";
       runBtn.disabled = !n || !!unconfirmed.length;
+      refreshPreviews();
     }
     refresh();
 
@@ -913,6 +1015,14 @@ export function openAddPapersModal(opts) {
         if (v.tone === "running") n.s.appendChild(el("span", "spinner-ring"));
         else n.s.textContent = v.label;
         n.m.textContent = v.msg;
+        if (extractionStage === "discover" && it.outcome === "identified" && !n.loading) {
+          n.loading = true;
+          resolvePaper(it.ref, true).then(updated => {
+            if (!updated || st.closed) return;
+            st.papers.set(updated.uid, updated);
+            upsertPreview(updated);
+          }).catch(() => {}).finally(() => { n.loading = false; });
+        }
       }
       const { finished, total } = jobProgress(job);
       exFill.style.width = total ? Math.round(finished / total * 100) + "%" : "0%";
@@ -922,11 +1032,11 @@ export function openAddPapersModal(opts) {
       // Finish becomes the CTA once the run is done; re-running is the side door.
       runBtn.classList.remove("extracting");
       runBtn.className = "btn";
-      runBtn.textContent = "Extract again";
+      runBtn.textContent = extractionStage === "discover" ? "Identify again" : "Extract again";
       runBtn.disabled = false;
       doneBtn.className = "btn primary";
       if (job.state === "failed" && job.error) {
-        engineWarn.textContent = `Extraction stopped: ${job.error}`;
+        engineWarn.textContent = `${extractionStage === "discover" ? "Identification" : "Extraction"} stopped: ${job.error}`;
       }
     }
 
@@ -936,7 +1046,8 @@ export function openAddPapersModal(opts) {
       runBtn.disabled = true;
       runBtn.innerHTML = "";
       runBtn.appendChild(el("span", "btn-spinner"));
-      runBtn.appendChild(document.createTextNode("Extracting…"));
+      runBtn.appendChild(document.createTextNode(
+        extractionStage === "discover" ? "Identifying…" : "Extracting…"));
       runBtn.classList.add("extracting");
       exList.innerHTML = ""; exList.hidden = false;
       exProgress.classList.add("on");
@@ -966,7 +1077,8 @@ export function openAddPapersModal(opts) {
         runBtn.className = "btn primary";
         runBtn.textContent = "Try again";
         runBtn.disabled = false;
-        engineWarn.textContent = (err && err.message) || "could not start extraction";
+        engineWarn.textContent = (err && err.message)
+          || `could not start ${extractionStage === "discover" ? "group identification" : "extraction"}`;
         for (const n of nodes.values()) {
           n.s.className = "bp-state failed"; n.s.textContent = "failed";
         }
@@ -977,19 +1089,19 @@ export function openAddPapersModal(opts) {
   /* ---------------- navigation ---------------- */
   const PANES = {
     source: sourcePane, ids: idsPane, fetching: fetchPane,
-    upload: uploadPane, extract: extractPane,
+    upload: uploadPane, [workflowStep]: extractPane,
   };
 
   function goto(step) {
     if (st.closed) return;
     st.step = step;
     for (const [key, pane] of Object.entries(PANES)) pane.hidden = key !== step;
-    if (step === "extract") renderExtractStep();
+    if (step === workflowStep) renderExtractStep();
     if (step === "ids") setTimeout(() => { if (!st.closed) ta.focus(); }, 30);
     renderStepper();
   }
 
   recount();
   showIdTab("paste");
-  goto(bulk ? "extract" : "source");
+  goto(bulk ? workflowStep : "source");
 }

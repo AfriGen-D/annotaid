@@ -70,12 +70,12 @@ def run_all(tmp):
     check("no items declared yet", store.load_group_items(paper["uid"]) == [])
     saved = store.save_group_items(paper["uid"], [
         {"label": "rs1800544", "evidence": "the rs1800544 variant"},
-        {"label": "rs1800544"}, {"label": "HLA-B*15:02"},
+        {"label": "RS1800544"}, {"label": "HLA-B*15:02"},
     ])
-    check("three items saved, in order",
-          [it["label"] for it in saved] == ["rs1800544", "rs1800544", "HLA-B*15:02"])
-    check("each item got a distinct rowId even with a duplicate label",
-          len({it["rowId"] for it in saved}) == 3)
+    check("duplicate labels are collapsed case-insensitively",
+          [it["label"] for it in saved] == ["rs1800544", "HLA-B*15:02"])
+    check("distinct items get distinct rowIds",
+          len({it["rowId"] for it in saved}) == 2)
     check("load_group_items agrees", store.load_group_items(paper["uid"]) == saved)
     check("pass-1 evidence survives storage", saved[0]["evidence"] == "the rs1800544 variant")
     check("blank labels are dropped, not stored",
@@ -87,10 +87,14 @@ def run_all(tmp):
     check("kept item's rowId survives the edit", edited[0]["rowId"] == saved[0]["rowId"])
     check("new item got a fresh rowId", edited[1]["rowId"] != saved[0]["rowId"])
     check("dropped items are actually gone",
-          {it["rowId"] for it in edited} & {saved[1]["rowId"], saved[2]["rowId"]} == set())
+          {it["rowId"] for it in edited} & {saved[1]["rowId"]} == set())
+
+    respelled = store.save_group_items(paper["uid"], [{"label": "RS1800544"}])
+    check("a case-only rediscovery keeps the existing rowId",
+          respelled[0]["rowId"] == saved[0]["rowId"])
 
     # reset to the three-item state used by the rest of this test
-    items = store.save_group_items(paper["uid"], saved)
+    items = store.save_group_items(paper["uid"], saved + [{"label": "EVA:eva123"}])
     check("paper dict surfaces groupItems", store.load_paper(paper["uid"])["groupItems"] == items)
 
     print("\nschema_builder: the prompt states the fixed declared list")
@@ -98,7 +102,7 @@ def run_all(tmp):
         "Extract.", cfg.features, group_items={"variant_haplotype": [it["label"] for it in items]},
     )
     check("declares the exact count", "exactly 3 entries" in prompt_text)
-    check("lists each label in order", "1. rs1800544" in prompt_text and "3. HLA-B*15:02" in prompt_text)
+    check("lists each label in order", "1. rs1800544" in prompt_text and "3. EVA:eva123" in prompt_text)
     check("tells the model not to invent an identifier",
           "do not include an identifier field" in prompt_text)
 
@@ -134,6 +138,7 @@ def run_all(tmp):
             captured["payload"] = payload
             return ('{"items": ['
                     '{"label":"rs1800544","evidence":"variant rs1800544"},'
+                    '{"label":"RS1800544","evidence":"the same variant again"},'
                     '{"label":"EVA:eva123","evidence":"EVA:eva123 was reported"},'
                     '{"label":"NM_000546.6:c.215C>G","evidence":"NM_000546.6:c.215C>G"}'
                     ']}')
@@ -144,7 +149,7 @@ def run_all(tmp):
         )
     finally:
         extraction.openrouter.call = original_call
-    check("dbSNP, EVA and HGVS forms are retained verbatim",
+    check("discovery de-duplicates IDs while retaining dbSNP, EVA and HGVS forms",
           [it["label"] for it in found] == [
               "rs1800544", "EVA:eva123", "NM_000546.6:c.215C>G",
           ])
@@ -198,8 +203,8 @@ def run_all(tmp):
           csv_text.startswith("pubmed_id,model,Variant/Haplotype,variant_haplotype.p_value\n"))
     check("exported labels match the declared list, PMID duplicated per row",
           "33915198,opus,rs1800544,0.03" in csv_text
-          and "33915198,opus,rs1800544,0.09" in csv_text
-          and "33915198,opus,HLA-B*15:02," in csv_text)
+          and "33915198,opus,HLA-B*15:02,0.09" in csv_text
+          and "33915198,opus,EVA:eva123," in csv_text)
 
 
 if __name__ == "__main__":

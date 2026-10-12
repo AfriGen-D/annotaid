@@ -28,20 +28,41 @@ const LEAF_TYPES = [
 // clicks Add — an error they did not make, before they had a chance to type.
 // Auto-naming keeps a draft valid at every moment, and the server stays the only
 // validator (no client-side notion of "incomplete but not wrong").
-function uniqueName(base, siblings) {
-  const taken = new Set(siblings.map(f => f.name));
-  if (!taken.has(base)) return base;
-  for (let i = 2; ; i++) if (!taken.has(`${base}_${i}`)) return `${base}_${i}`;
+export function fieldNameFromDisplay(display, fallback = "field") {
+  let name = String(display || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!name) name = fallback;
+  if (/^[0-9]/.test(name)) name = `field_${name}`;
+  return name;
+}
+
+function humanizeName(name) {
+  const text = String(name || "").replace(/[-_]+/g, " ").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "";
+}
+
+export function uniqueName(base, siblings, current = null) {
+  const taken = new Set(siblings.filter(f => f !== current)
+    .map(f => String(f.name || "").toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let i = 2; ; i++) {
+    if (!taken.has(`${base}_${i}`.toLowerCase())) return `${base}_${i}`;
+  }
 }
 
 export function blankLeaf(siblings = []) {
-  return { name: uniqueName("new_field", siblings), type: "string",
+  return { name: uniqueName("new_field", siblings), label: "New field", type: "string",
            description: "", nullable: true };
 }
 
 export function blankGroup(siblings = []) {
   return {
     name: uniqueName("new_group", siblings),
+    label: "New group",
     type: "group",
     description: "",
     maxItems: 50,
@@ -58,6 +79,16 @@ export function blankGroup(siblings = []) {
  */
 export function renderFeatureEditor(host, { features, onChange }) {
   const fire = () => onChange && onChange(features);
+
+  // Older/shared configs may only have the technical key. The editor is now
+  // display-name first, so give those fields the same readable fallback the
+  // rest of the app used to compute at render time.
+  for (const f of features) {
+    if (!f.label) f.label = humanizeName(f.name);
+    for (const child of f.features || []) {
+      if (!child.label) child.label = humanizeName(child.name);
+    }
+  }
 
   function draw() {
     host.innerHTML = "";
@@ -104,13 +135,30 @@ export function renderFeatureEditor(host, { features, onChange }) {
   }
 
   // ---- shared bits --------------------------------------------------------
-  function textInput(obj, key, placeholder, cls) {
-    const inp = el("input", cls || "fe-input");
-    inp.type = "text";
-    inp.value = obj[key] || "";
-    inp.placeholder = placeholder;
-    inp.oninput = () => { obj[key] = inp.value; fire(); };   // no redraw: keep the caret
-    return inp;
+  function namingInputs(obj, siblings, kind) {
+    const display = el("input", "fe-input fe-label");
+    display.type = "text";
+    display.value = obj.label || "";
+    display.placeholder = kind === "group" ? "Group display name" : "Display name";
+    display.setAttribute("aria-label", display.placeholder);
+
+    const generated = el("input", "fe-input fe-name fe-generated");
+    generated.type = "text";
+    generated.value = obj.name || "";
+    generated.readOnly = true;
+    generated.tabIndex = -1;
+    generated.title = "Generated automatically from the display name; duplicates receive a numeric suffix";
+    generated.setAttribute("aria-label", kind === "group"
+      ? "Generated group field name" : "Generated field name");
+
+    display.oninput = () => {
+      obj.label = display.value;
+      const fallback = kind === "group" ? "new_group" : "new_field";
+      obj.name = uniqueName(fieldNameFromDisplay(display.value, fallback), siblings, obj);
+      generated.value = obj.name;
+      fire();
+    };
+    return [display, generated];
   }
 
   function descBox(obj) {
@@ -218,8 +266,7 @@ export function renderFeatureEditor(host, { features, onChange }) {
     const card = el("div", "fe-card" + (group ? " nested" : ""));
 
     const head = el("div", "fe-head");
-    head.appendChild(textInput(f, "name", "field_name", "fe-input fe-name"));
-    head.appendChild(textInput(f, "label", "Display name (optional)", "fe-input fe-label"));
+    head.append(...namingInputs(f, list, "field"));
     head.appendChild(typeSelect(f, redraw));
     head.appendChild(group ? moveControls(list, i, redraw) : topLevelControls(i, redraw));
     card.appendChild(head);
@@ -249,8 +296,7 @@ export function renderFeatureEditor(host, { features, onChange }) {
     const card = el("div", "fe-card fe-group");
 
     const head = el("div", "fe-head");
-    head.appendChild(textInput(g, "name", "group_name", "fe-input fe-name"));
-    head.appendChild(textInput(g, "label", "Display name (optional)", "fe-input fe-label"));
+    head.append(...namingInputs(g, features, "group"));
     head.appendChild(el("span", "fe-type-fixed", "repeating group"));
     head.appendChild(topLevelControls(i, draw));
     card.appendChild(head);

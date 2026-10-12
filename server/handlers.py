@@ -468,7 +468,10 @@ def h_save_group_items(ctx, proj, req, params, body):
             return responses.send_error_json(req, 403, blocked)
     saved = proj.store.save_group_items(
         uid, items, reviewed=reviewed,
-        discovered=True if reviewed is True else None,
+        # A non-empty manually entered list is also a completed identification
+        # result. This makes the no-AI fallback behave like pass 1, while an
+        # approved empty list is covered by reviewed=True.
+        discovered=True if reviewed is True or bool(items) else None,
     )
     responses.send_json(req, {"items": saved, "reviewed": bool(reviewed)})
 

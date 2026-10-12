@@ -35,6 +35,30 @@ function rowProgress(row) {
   return `${cells.filter(c => c.confirmed).length}/${cells.length}`;
 }
 
+// A populated AI suggestion is not yet curated work. Escalate the warning only
+// once a person has confirmed or changed a value (including changing one to an
+// intentionally empty value).
+export function rowHasCuratedValues(row) {
+  return Object.values((row && row.features) || {}).some(cell =>
+    !!(cell && (cell.confirmed || cell.confirmedAt || cell.editedAt)));
+}
+
+function confirmRowRemoval(gdef, row, ctx) {
+  const label = rowLabel(gdef, row, ctx);
+  if (rowHasCuratedValues(row)) {
+    const consequence = row.origin === "ai"
+      ? "It will be excluded from the curated dataset, including those values. You can restore it from the Removed section."
+      : "Those values and this curator-added entry will be permanently removed.";
+    return window.confirm(
+      `Warning: “${label}” already contains curated or confirmed values. ${consequence}`);
+  }
+  if (row.origin === "ai") {
+    return window.confirm(
+      `Remove “${label}” from the curated dataset? You can restore it from the Removed section.`);
+  }
+  return window.confirm(`Remove “${label}” from this paper?`);
+}
+
 /**
  * gdef   the group definition from the project config
  * gnode  { present, aiPresent, confirmed, rows: [...] } — mutated in place
@@ -187,8 +211,19 @@ function rowCard(gdef, gnode, row, ctx) {
   del.title = row.origin === "ai"
     ? "Reject this entry (kept as a record that the AI proposed it)"
     : "Remove this entry";
-  del.onclick = e => {
+  del.onclick = async e => {
     e.stopPropagation();
+    if (!confirmRowRemoval(gdef, row, ctx)) return;
+    // Curator-created rows are hard-deleted, so also remove their declared
+    // identifier. AI rows remain declared to preserve their restorable audit
+    // record and label in the Removed section.
+    if (row.origin !== "ai" && ctx.onRemoveDeclaredItem) {
+      try {
+        await ctx.onRemoveDeclaredItem(row);
+      } catch (_) {
+        return; // the callback surfaces the save error
+      }
+    }
     row.deletedAt = new Date().toISOString();
     // The server soft-deletes an AI row (a rejected claim is a false positive
     // worth counting) and hard-deletes a curator one. Either way it must be

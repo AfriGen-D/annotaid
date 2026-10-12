@@ -109,8 +109,9 @@ this on every request; the interface only hides what you can't do.
      came from PubMed itself, a fetched paper is stored pre-confirmed.
    - **Upload PDFs** — drag-and-drop or file dialog for PDFs you already have. Each gets a
      content-hash id so re-uploads dedupe.
-   - **AI extraction** — see step 3. Any paper whose identity is still unresolved is settled
-     inline first (confirm a PMID, or record that it has none).
+   - **AI extraction / Identify groups** — see step 3. A project with a repeating group gets a
+     distinct **Identify groups** phase that shows the entries found for each paper; full extraction
+     waits for the assignee's review. Any unresolved paper identity is settled inline first.
 2. **Identify the paper** — uploaded (not fetched) PDFs need this: a PMID prefilled from the
    filename stem if it is purely numeric, or from the PMID you named on the fetch step; it is never
    auto-committed. Duplicate PMIDs are rejected *within a project* — another project may hold the
@@ -126,9 +127,13 @@ this on every request; the interface only hides what you can't do.
 
    - **Pass 1:** a manager asks AI to identify reported entries. dbSNP, EVA, HGVS, haplotype and
      other identifier formats are kept verbatim with a short evidence quote.
-   - **Review pause:** the assigned curator corrects, adds or removes IDs and approves the list.
+   - **Review pause:** a project manager can correct, add or remove IDs in the add-paper flow, and
+     the assigned curator can do the same in the curation pane. Discovery quotes locate their source
+     in the paper. The assignee approves the de-duplicated list, after which this setup panel leaves
+     the top of the curation pane.
    - **Pass 2:** that curator starts full curation. AI fills one row per approved entry and cannot
-     invent, omit or reorder rows.
+     invent, omit or reorder rows. Entries can still be added or removed in the group editor; every
+     removal is confirmed, with a stronger warning when the entry contains curated values.
 4. **Verify** — per feature: the AI value is prefilled and editable; the original `aiValue` is kept
    immutably beside it (unchanged = "human agrees with AI", edited = a correction). Click a value's
    evidence quote to scroll+highlight it in the PDF. A failed match is declared ("not found in PDF")

@@ -14,7 +14,7 @@ import * as store from "./store.js";
 import { renderPaperList, paperLabel, STATUS_FILTERS } from "./paperList.js";
 import { renderIdentityBox } from "./identityBox.js";
 import { renderFeature, lockControls } from "./featureEditor.js";
-import { renderGroup } from "./groupEditor.js";
+import { renderGroup, rowHasCuratedValues } from "./groupEditor.js";
 import { renderGroupItemsList } from "./groupItemsList.js";
 import { openAddPapersModal } from "./addPapersModal.js";
 import { renderPaperBar, canEdit } from "./paperActions.js";
@@ -156,6 +156,7 @@ function modalCallbacks() {
     onConfirmPmid: confirmPaperPmid,
     onNoPmid: markPaperNoPmid,
     onStartExtract: startExtractJob,
+    onSaveGroupItems: saveGroupItemsFromModal,
     onFinish: finishAddPapers,
     findByPmid: pmid => S.papers.find(p => p.pmid === pmid) || null,
     config: S.config,
@@ -387,8 +388,8 @@ function mergePapers(papers) {
 }
 
 // A paper a job just added, once the list has it.
-async function resolvePaper(uid) {
-  if (!paper(uid)) await refreshPapers();
+async function resolvePaper(uid, forceRefresh = false) {
+  if (forceRefresh || !paper(uid)) await refreshPapers();
   return paper(uid) || null;
 }
 
@@ -563,13 +564,38 @@ function renderRight() {
   // A repeating group uses a two-pass flow: AI discovers identifiers, then the
   // assignee reviews them before starting the full feature extraction.
   const groupDef = (S.config.features || []).find(f => f.type === "group");
-  if (groupDef) {
+  if (groupDef && !p.groupItemsReviewed) {
     const gi = renderGroupItemsPanel(p, groupDef);
     if (!setup) lockControls(gi);
     pane.appendChild(gi);
   }
 
   const runs = S.runsByUid[p.uid] || {};
+  const usableRuns = Object.values(runs).filter(run => run.status !== "failed");
+  if (groupDef && p.groupItemsReviewed && Object.keys(runs).length && !usableRuns.length) {
+    const box = el("div", "no-runs");
+    box.appendChild(el("div", null, S.curatingUids.has(p.uid)
+      ? "AI curation is running…"
+      : "AI curation did not complete for the approved groups."));
+    if (canEdit(p, S.me) && !S.curatingUids.has(p.uid)) {
+      const retry = el("button", "btn primary no-runs-btn", "Retry AI curation");
+      retry.onclick = async () => {
+        retry.disabled = true;
+        try {
+          await startExtractJob({ uids: [p.uid], stage: "curate" });
+          renderRight();
+        } catch (err) {
+          retry.disabled = false;
+          toast(`Could not start AI curation: ${err.message}`);
+        }
+      };
+      box.appendChild(retry);
+    }
+    pane.appendChild(box);
+    $("#featstat").textContent = "";
+    setViewToggle(null);
+    return;
+  }
   if (!Object.keys(runs).length) {
     const box = el("div", "no-runs");
     if (groupDef) {
@@ -579,11 +605,24 @@ function renderRight() {
           ? "Waiting for the assignee to review the identified entries above."
           : S.curatingUids.has(p.uid)
             ? "AI curation is running…"
-            : "The assigned curator can start AI curation above.";
+            : "The groups are approved. The assigned curator can start AI curation.";
       box.appendChild(el("div", null, message));
       if (S.permissions.extract && !p.groupItemsDiscovered) {
         const b = el("button", "btn primary no-runs-btn", "Run identifier discovery…");
         b.onclick = openExtractModal;
+        box.appendChild(b);
+      } else if (p.groupItemsReviewed && canEdit(p, S.me) && !S.curatingUids.has(p.uid)) {
+        const b = el("button", "btn primary no-runs-btn", "Run AI curation");
+        b.onclick = async () => {
+          b.disabled = true;
+          try {
+            await startExtractJob({ uids: [p.uid], stage: "curate" });
+            renderRight();
+          } catch (err) {
+            b.disabled = false;
+            toast(`Could not start AI curation: ${err.message}`);
+          }
+        };
         box.appendChild(b);
       }
     } else if (S.permissions.extract) {
@@ -618,11 +657,22 @@ function groupItemLabelsFor(p) {
   return out;
 }
 
+function groupItemEvidenceKey(item, index) {
+  return `group-item@${item.rowId || index}`;
+}
+
 // Used by groupEditor.js's "+ Add entry" (adding a row directly to an
 // existing run, after the fact) so that row gets the SAME kind of declared
 // identity as one entered up front — otherwise it would show as
 // "(unidentified)" forever and never get a label in a CSV export.
 async function declareGroupItem(p, label) {
+  const key = String(label || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  if ((p.groupItems || []).some(item =>
+    String(item.label || "").trim().replace(/\s+/g, " ").toLocaleLowerCase() === key)) {
+    const err = new Error(`"${label}" is already in the identified group`);
+    toast(err.message);
+    throw err;
+  }
   try {
     const result = await api.saveGroupItems(p.uid, [...(p.groupItems || []), { label }]);
     p.groupItems = result.items;
@@ -634,28 +684,77 @@ async function declareGroupItem(p, label) {
   }
 }
 
+async function saveGroupItemsFromModal(uid, items) {
+  const result = await api.saveGroupItems(uid, items);
+  const p = paper(uid);
+  if (p) {
+    p.groupItems = result.items;
+    p.groupItemsDiscovered = true;
+    renderLeft();
+    if (uid === S.activeUid) { renderRight(); recomputeMatches(); }
+  }
+  return result;
+}
+
+function groupItemHasCuratedValues(p, item) {
+  if (!item || !item.rowId) return false;
+  return Object.values(S.runsByUid[p.uid] || {}).some(run =>
+    Object.values(run.groups || {}).some(group =>
+      (group.rows || []).some(row => row.rowId === item.rowId && rowHasCuratedValues(row))));
+}
+
+function confirmGroupItemRemoval(p, item) {
+  const label = item.label || "this entry";
+  if (groupItemHasCuratedValues(p, item)) {
+    return window.confirm(
+      `Warning: “${label}” already contains curated or confirmed values. `
+      + "Removing its identifier can detach those values from this group. Continue?");
+  }
+  const hasRuns = Object.keys(S.runsByUid[p.uid] || {}).length > 0;
+  if (hasRuns) {
+    return window.confirm(
+      `Remove “${label}”? Extracted values already saved for it may no longer show a label.`);
+  }
+  return window.confirm(`Remove “${label}” from this paper's identified groups?`);
+}
+
+async function removeDeclaredGroupItem(p, row) {
+  if (!row || !row.rowId) return;
+  const item = (p.groupItems || []).find(candidate => candidate.rowId === row.rowId);
+  if (!item) return;
+  try {
+    const remaining = p.groupItems.filter(candidate => candidate.rowId !== row.rowId);
+    const result = await api.saveGroupItems(p.uid, remaining);
+    p.groupItems = result.items;
+  } catch (err) {
+    toast(`Could not remove “${item.label || "entry"}”: ${err.message}`);
+    throw err;
+  }
+}
+
 function renderGroupItemsPanel(p, groupDef) {
   const wrap = el("div", "gi-panel");
   const title = groupDef.label || groupDef.name;
-  wrap.appendChild(el("div", "gi-head", p.groupItemsReviewed ? `${title} · reviewed` : title));
+  wrap.appendChild(el("div", "gi-head", title));
   if (groupDef.description) wrap.appendChild(el("div", "gi-desc", groupDef.description));
   if (!p.groupItemsDiscovered) {
     wrap.appendChild(el("div", "gi-hint",
       "Pass 1 has not run yet. A project manager starts identifier discovery; the assignee reviews the result here."));
     return wrap;
   }
-  wrap.appendChild(el("div", "gi-hint", p.groupItemsReviewed
-    ? "This approved list was used for AI curation."
-    : "Review the AI-identified entries. IDs may be dbSNP, EVA, HGVS, haplotypes, or another format used by the paper."));
+  wrap.appendChild(el("div", "gi-hint",
+    "Review the AI-identified entries. Click an evidence quote to locate it in the paper. IDs may be dbSNP, EVA, HGVS, haplotypes, or another format used by the paper."));
 
-  const runCount = Object.keys(S.runsByUid[p.uid] || {}).length;
   p.groupItems = p.groupItems || [];
+  const groupItems = p.groupItems;
 
   async function commit() {
     try {
-      const result = await api.saveGroupItems(p.uid, p.groupItems);
-      p.groupItems = result.items;
+      const result = await api.saveGroupItems(p.uid, groupItems);
+      groupItems.splice(0, groupItems.length, ...result.items);
+      p.groupItems = groupItems;
       list.redraw();
+      recomputeMatches();
     } catch (err) {
       toast(`Could not save: ${err.message}`);
     }
@@ -663,45 +762,16 @@ function renderGroupItemsPanel(p, groupDef) {
 
   const list = renderGroupItemsList(p.groupItems, {
     onChange: commit,
-    onRemove: item => {
-      if (!runCount) return true;
-      return window.confirm(
-        `Remove "${item.label || "this entry"}"? Any extracted values already saved for `
-        + "it will no longer show a label.");
-    },
+    onDuplicate: label => toast(`"${label}" is already in this group`),
+    onActivateEvidence: (item, index) => viewer.activateFeature(groupItemEvidenceKey(item, index)),
+    onRemove: item => confirmGroupItemRemoval(p, item),
   });
 
   const addBtn = el("button", "btn gi-add", "+ Add entry");
   addBtn.onclick = () => list.addRow();
 
   wrap.appendChild(list.el);
-  if (p.groupItemsReviewed) {
-    list.el.querySelectorAll("input,button").forEach(node => { node.disabled = true; });
-  } else {
-    wrap.appendChild(addBtn);
-  }
-
-  const runs = Object.values(S.runsByUid[p.uid] || {});
-  const hasUsableRun = runs.some(run => run.status !== "failed");
-  if (p.groupItemsReviewed && canEdit(p, S.me) && !hasUsableRun) {
-    if (S.curatingUids.has(p.uid)) {
-      wrap.appendChild(el("div", "gi-hint", "Pass 2 is running…"));
-    } else {
-      const retry = el("button", "btn primary gi-review",
-        runs.length ? "Retry AI curation" : "Run AI curation");
-      retry.onclick = async () => {
-        retry.disabled = true;
-        try {
-          await startExtractJob({ uids: [p.uid], stage: "curate" });
-          renderRight();
-        } catch (err) {
-          retry.disabled = false;
-          toast(`Could not start AI curation: ${err.message}`);
-        }
-      };
-      wrap.appendChild(retry);
-    }
-  }
+  wrap.appendChild(addBtn);
 
   if (!p.groupItemsReviewed && canEdit(p, S.me)) {
     const review = el("button", "btn primary gi-review", "Approve identifiers and run AI curation");
@@ -712,6 +782,11 @@ function renderGroupItemsPanel(p, groupDef) {
         p.groupItems = result.items;
         p.groupItemsReviewed = true;
         p.groupItemsDiscovered = true;
+        // Approval is durable and immediately removes the review panel. If the
+        // AI job cannot start, the no-run state exposes a retry button without
+        // asking the curator to approve the same grouping again.
+        renderRight();
+        recomputeMatches();
         await startExtractJob({ uids: [p.uid], stage: "curate" });
         renderRight();
         toast("Identifiers approved — AI curation started");
@@ -824,6 +899,7 @@ function makeCard(run, fdef, isCard) {
       onActivateEvidence: key => viewer.activateFeature(key),
       groupItemLabels: groupItemLabelsFor(paper(run.uid)),
       onDeclareItem: label => declareGroupItem(paper(run.uid), label),
+      onRemoveDeclaredItem: row => removeDeclaredGroupItem(paper(run.uid), row),
       readOnly,
       users: S.users,
     });
@@ -904,7 +980,6 @@ async function onGroupStructureChange(run) {
 // composite one — two entries can quote different spans for the same field.
 function evidenceTargets(run) {
   const out = [];
-  S.evidenceCells = {};
   for (const f of S.config.features) {
     if (f.type === "group") {
       const g = (run.groups || {})[f.name];
@@ -929,6 +1004,15 @@ function evidenceTargets(run) {
   return out;
 }
 
+function groupReviewEvidenceTargets(p) {
+  if (!p || !p.groupItemsDiscovered || p.groupItemsReviewed) return [];
+  return (p.groupItems || []).map((item, index) => ({
+    name: groupItemEvidenceKey(item, index),
+    label: item.label,
+    evidence: item.evidence,
+  }));
+}
+
 function rowTitle(gdef, row) {
   const declared = groupItemLabelsFor(activePaper())[row.rowId];
   if (declared) return declared;
@@ -945,8 +1029,10 @@ function recomputeMatches() {
   if (!p) return;
   const runs = S.runsByUid[p.uid] || {};
   const run = runs[activeModelId(p)];
-  if (!run) return;
-  viewer.computeMatches(evidenceTargets(run));   // fires onMatches -> applyMatches
+  S.evidenceCells = {};
+  const targets = groupReviewEvidenceTargets(p);
+  if (run) targets.push(...evidenceTargets(run));
+  viewer.computeMatches(targets);   // fires onMatches -> applyMatches
 }
 
 function applyMatches(results) {

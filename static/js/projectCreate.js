@@ -208,7 +208,7 @@ export function openCreateProject({ onCreated, template }) {
   /* ------------------------------ features ----------------------------- */
   function drawFeatures() {
     body.appendChild(el("div", "modal-hint",
-      "First define values that apply once to the whole paper. Then, if needed, add one repeating group for entries such as variants. After PDFs are loaded, AI identifies those entries in pass 1; the assigned curator reviews them before pass 2 extracts these fields."));
+      "First define values that apply once to the whole paper. Enter a display name; AnnotAid generates a unique field_name automatically. Then, if needed, add one repeating group for entries such as variants. After PDFs are loaded, AI identifies those entries; the assigned curator reviews them before extraction."));
 
     body.appendChild(sheetToolbar());
 
