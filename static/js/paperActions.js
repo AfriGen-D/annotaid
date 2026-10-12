@@ -9,7 +9,7 @@
 // this is so nobody types into a field that can never be saved.
 import { api } from "./api.js";
 import { el } from "./dom.js";
-import { openDialog, askReason, shortTime } from "./dialog.js";
+import { openDialog, askReason, confirmAction, shortTime } from "./dialog.js";
 
 export const STATUS_LABEL = {
   unassigned: "Unassigned",
@@ -96,8 +96,9 @@ export function renderPaperBar(container, p, ctx) {
     const submit = el("button", "btn primary pb-btn", "Submit");
     submit.title = "Finished curating — hand it in (it becomes read only)";
     const all = [submit];
-    submit.onclick = () => {
-      if (!window.confirm("Submit this paper? It becomes read only; a manager can reopen it.")) return;
+    submit.onclick = async () => {
+      if (!await confirmAction({ title: "Submit paper", confirmLabel: "Submit paper",
+        message: "Submit this paper? It becomes read only; a manager can reopen it." })) return;
       act(all, () => api.submit(p.uid));
     };
     actions.push(...all);

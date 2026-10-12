@@ -11,6 +11,7 @@
 // goes away.
 import { el } from "./dom.js";
 import { renderFeature, lockControls, attribution } from "./featureEditor.js";
+import { askText, confirmAction } from "./dialog.js";
 
 // A row's name is the curator's own declared identity for it (main.js passes
 // ctx.groupItemLabels, built from the paper's groupItems — server/project_
@@ -49,14 +50,17 @@ function confirmRowRemoval(gdef, row, ctx) {
     const consequence = row.origin === "ai"
       ? "It will be excluded from the curated dataset, including those values. You can restore it from the Removed section."
       : "Those values and this curator-added entry will be permanently removed.";
-    return window.confirm(
-      `Warning: “${label}” already contains curated or confirmed values. ${consequence}`);
+    return confirmAction({ title: "Remove curated entry", destructive: true,
+      confirmLabel: "Remove entry",
+      message: `“${label}” already contains curated or confirmed values. ${consequence}` });
   }
   if (row.origin === "ai") {
-    return window.confirm(
-      `Remove “${label}” from the curated dataset? You can restore it from the Removed section.`);
+    return confirmAction({ title: "Remove entry", destructive: true,
+      confirmLabel: "Remove entry",
+      message: `Remove “${label}” from the curated dataset? You can restore it from the Removed section.` });
   }
-  return window.confirm(`Remove “${label}” from this paper?`);
+  return confirmAction({ title: "Remove entry", destructive: true,
+    confirmLabel: "Remove entry", message: `Remove “${label}” from this paper?` });
 }
 
 /**
@@ -96,7 +100,9 @@ export function renderGroup(gdef, gnode, ctx) {
   add.onclick = async () => {
     let rowId = null;
     if (ctx.onDeclareItem) {
-      const label = window.prompt("Identify this entry (e.g. a variant or haplotype id):", "");
+      const label = await askText({ title: "Add group entry",
+        prompt: "Identify this entry (e.g. a variant or haplotype ID).",
+        placeholder: "e.g. rs1800544", confirmLabel: "Add entry" });
       if (label === null) return;
       const trimmed = label.trim();
       if (!trimmed) return;
@@ -199,6 +205,30 @@ function rowCard(gdef, gnode, row, ctx) {
   head.appendChild(el("span", "rl-caret", open ? "▾" : "▸"));
   const nameEl = el("span", "rl-name", rowLabel(gdef, row, ctx));
   head.appendChild(nameEl);
+  const identifierEvidence = row.rowId && ctx.groupItemEvidence &&
+    ctx.groupItemEvidence[row.rowId];
+  if (identifierEvidence) {
+    const source = el("button", "rl-evidence");
+    source.type = "button";
+    source.title = `Find identifier evidence in the PDF: “${identifierEvidence}”`;
+    source.setAttribute("aria-label", `Find evidence for ${nameEl.textContent} in the PDF`);
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    ring.setAttribute("cx", "8");
+    ring.setAttribute("cy", "8");
+    ring.setAttribute("r", "4");
+    const cross = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    cross.setAttribute("d", "M8 1v3m0 8v3M1 8h3m8 0h3");
+    icon.append(ring, cross);
+    source.appendChild(icon);
+    source.onclick = e => {
+      e.stopPropagation();
+      ctx.onActivateEvidence(`group-item@${row.rowId}`);
+    };
+    head.appendChild(source);
+  }
   if (row.origin === "curator") {
     const b = el("span", "rl-origin you", "added by you");
     b.title = "The AI did not propose this entry";
@@ -213,7 +243,7 @@ function rowCard(gdef, gnode, row, ctx) {
     : "Remove this entry";
   del.onclick = async e => {
     e.stopPropagation();
-    if (!confirmRowRemoval(gdef, row, ctx)) return;
+    if (!await confirmRowRemoval(gdef, row, ctx)) return;
     // Curator-created rows are hard-deleted, so also remove their declared
     // identifier. AI rows remain declared to preserve their restorable audit
     // record and label in the Removed section.

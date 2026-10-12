@@ -9,6 +9,7 @@ import { api, setProject } from "./api.js";
 import { openCreateProject } from "./projectCreate.js";
 import { renderUserMenu, toLogin } from "./session.js";
 import { openTeamPanel } from "./teamPanel.js";
+import { confirmAction } from "./dialog.js";
 
 const S = { projects: [], global: null, template: null, me: null, canCreate: false };
 
@@ -198,7 +199,9 @@ function cardMenu(p) {
     archive.onclick = async e => {
       e.preventDefault(); e.stopPropagation();
       menu.hidden = true;
-      if (!confirm(`Archive "${p.name}"? It disappears for everyone; you can unarchive it from the Admin console.`)) return;
+      if (!await confirmAction({ title: "Archive project", destructive: true,
+        confirmLabel: "Archive project",
+        message: `Archive "${p.name}"? It disappears for everyone; you can unarchive it from the Admin console.` })) return;
       try {
         await api.archiveProject(p.id);
         toast("Project archived");

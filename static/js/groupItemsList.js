@@ -10,16 +10,64 @@ function itemKey(label) {
 }
 
 export function renderGroupItemsList(items, {
-  onChange, onRemove, onDuplicate, onActivateEvidence,
+  onChange, onRemove, onBulkRemove, onDuplicate, onActivateEvidence,
 } = {}) {
   const wrap = el("div", "gi-list");
+  const selected = new Set();
 
   function draw() {
     wrap.innerHTML = "";
+    for (const item of selected) if (!items.includes(item)) selected.delete(item);
+
+    if (items.length) {
+      const tools = el("div", "gi-bulk-tools");
+      const selectLabel = el("label", "gi-select-all");
+      const selectAll = el("input");
+      selectAll.type = "checkbox";
+      selectAll.checked = selected.size === items.length;
+      selectAll.indeterminate = selected.size > 0 && selected.size < items.length;
+      selectAll.onchange = () => {
+        selected.clear();
+        if (selectAll.checked) items.forEach(item => selected.add(item));
+        draw();
+      };
+      selectLabel.appendChild(selectAll);
+      selectLabel.appendChild(el("span", null, "Select all"));
+      tools.appendChild(selectLabel);
+
+      const remove = el("button", "btn gi-remove-selected",
+        `Remove selected (${selected.size})`);
+      remove.type = "button";
+      remove.disabled = selected.size === 0;
+      remove.onclick = async () => {
+        const chosen = items.filter(item => selected.has(item));
+        if (!chosen.length || (onBulkRemove && await onBulkRemove(chosen) === false)) return;
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (selected.has(items[i])) items.splice(i, 1);
+        }
+        selected.clear();
+        draw();
+        onChange && onChange();
+      };
+      tools.appendChild(remove);
+      wrap.appendChild(tools);
+    }
+
     items.forEach((item, i) => {
       const row = el("div", "gi-row");
+      const choose = el("input", "gi-select");
+      choose.type = "checkbox";
+      choose.checked = selected.has(item);
+      choose.setAttribute("aria-label", `Select ${item.label || `entry ${i + 1}`} for removal`);
+      choose.onchange = () => {
+        if (choose.checked) selected.add(item);
+        else selected.delete(item);
+        draw();
+      };
+      row.appendChild(choose);
       const input = el("input");
       input.type = "text";
+      input.className = "gi-label-input";
       input.value = item.label;
       input.placeholder = "e.g. rs1800544";
       input.oninput = () => { item.label = input.value; };
@@ -29,6 +77,7 @@ export function renderGroupItemsList(items, {
         const duplicate = key && items.some((other, at) => at !== i && itemKey(other.label) === key);
         if (duplicate) {
           const label = item.label;
+          selected.delete(item);
           items.splice(i, 1);
           draw();
           if (onDuplicate) onDuplicate(label);
@@ -50,8 +99,9 @@ export function renderGroupItemsList(items, {
 
       const del = el("button", "fe-icon fe-del", "×");
       del.title = "Remove this entry";
-      del.onclick = () => {
-        if (onRemove && onRemove(item, i) === false) return;
+      del.onclick = async () => {
+        if (onRemove && await onRemove(item, i) === false) return;
+        selected.delete(item);
         items.splice(i, 1);
         draw();
         onChange && onChange();
@@ -68,7 +118,7 @@ export function renderGroupItemsList(items, {
     }
     items.push({ rowId: null, label, evidence: null });
     draw();
-    const inputs = wrap.querySelectorAll("input");
+    const inputs = wrap.querySelectorAll(".gi-label-input");
     if (inputs.length) inputs[inputs.length - 1].focus();
   }
 

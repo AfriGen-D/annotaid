@@ -10,6 +10,7 @@
 import { el } from "./dom.js";
 import { api } from "./api.js";
 import { renderFeatureEditor, cleanFeatures, blankLeaf } from "./featureSchemaEditor.js";
+import { confirmAction } from "./dialog.js";
 
 const STEPS = ["details", "features", "review"];
 const STEP_LABEL = { details: "Details", features: "Schema", review: "Review" };
@@ -276,9 +277,10 @@ export function openCreateProject({ onCreated, template }) {
       // row a blank project starts with) is worth protecting.
       const hasWork = st.features.length > 1
         || (st.features[0] && st.features[0].name !== "new_field");
-      if (hasWork && !window.confirm(
-        `Replace the current ${st.features.length} feature(s) with the uploaded spreadsheet?`
-      )) return;
+      if (hasWork && !await confirmAction({ title: "Replace feature set",
+        confirmLabel: "Replace features",
+        message: `Replace the current ${st.features.length} feature(s) with the uploaded spreadsheet?`
+      })) return;
 
       let res;
       try {

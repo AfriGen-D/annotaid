@@ -1,72 +1,45 @@
 {
   "features": [
     {
-      "name": "p_value",
-      "type": "number",
-      "nullable": true,
-      "description": "The reported p-value for the study's primary association/result (e.g. 5.2e-8). If multiple are reported, use the primary/most significant one stated in the text."
-    },
-    {
-      "name": "countries",
-      "type": "array<string>",
-      "nullable": true,
-      "description": "The country or countries the study participants are from (participant ancestry/recruitment origin, NOT the institution's location if different)."
-    },
-    {
-      "name": "population_description",
+      "name": "geographical_region",
+      "label": "Geographical Region",
       "type": "string",
       "nullable": true,
-      "description": "Free-text description of the study population as the authors describe it (e.g. ethnicity, ancestry, or cohort description such as 'Black South African')."
-    },
-    {
-      "name": "sample_size",
-      "type": "number",
-      "nullable": true,
-      "description": "The number of participants in the study sample (total N used for the primary analysis)."
+      "description": "Broad geographical origin of the study participants."
     },
     {
       "name": "mixed_population",
-      "type": "boolean",
+      "label": "Mixed Population",
+      "type": "enum",
+      "enumValues": [
+        "Yes",
+        "No",
+        "Unclear"
+      ],
       "nullable": true,
-      "description": "true if the study sample combines participants from more than one distinct population/ethnicity/country; false if it is a single population. Absent if the text does not make this determinable."
+      "description": "Whether participants represent multiple countries, ancestries, or populations (Yes, No, or Unclear)."
     },
     {
       "name": "variants",
       "type": "group",
       "label": "Variants",
-      "description": "One entry per genetic variant the paper reports an association for.",
+      "description": "Group association results by each reported genetic variant identifier (RSID).",
       "min": 0,
       "maxItems": 50,
       "features": [
         {
-          "name": "gene",
+          "name": "gene_symbol",
+          "label": "Gene Symbol",
           "type": "string",
           "nullable": true,
-          "description": "The gene this variant is mapped to, as named by the authors."
-        },
-        {
-          "name": "risk_allele",
-          "type": "enum",
-          "enumValues": [
-            "A",
-            "C",
-            "G",
-            "T"
-          ],
-          "nullable": true,
-          "description": "The allele reported as carrying the risk or effect."
-        },
-        {
-          "name": "odds_ratio",
-          "type": "number",
-          "nullable": true,
-          "description": "The odds ratio reported for this variant's association."
+          "description": "Standardized gene symbol associated with the rsID."
         },
         {
           "name": "p_value",
-          "type": "number",
+          "label": "P Value",
+          "type": "string",
           "nullable": true,
-          "description": "The p-value reported for THIS variant's association (not the study's primary p-value)."
+          "description": "Statistical significance value reported for the variant association."
         }
       ]
     }
@@ -111,55 +84,27 @@
       "nullText": "",
       "columns": [
         {
-          "header": "pubmed_id",
+          "header": "PMID",
           "source": "pmid"
         },
         {
-          "header": "doi",
-          "source": "doi"
+          "header": "Geographical Region",
+          "source": "geographical_region"
         },
         {
-          "header": "model",
-          "source": "modelId"
-        },
-        {
-          "header": "p_value",
-          "source": "p_value"
-        },
-        {
-          "header": "countries",
-          "source": "countries"
-        },
-        {
-          "header": "population_description",
-          "source": "population_description"
-        },
-        {
-          "header": "sample_size",
-          "source": "sample_size"
-        },
-        {
-          "header": "mixed_population",
+          "header": "Mixed Population",
           "source": "mixed_population"
         },
         {
-          "header": "variant_id",
+          "header": "RSID",
           "source": "variants.$label"
         },
         {
-          "header": "gene",
-          "source": "variants.gene"
+          "header": "Gene Symbol",
+          "source": "variants.gene_symbol"
         },
         {
-          "header": "risk_allele",
-          "source": "variants.risk_allele"
-        },
-        {
-          "header": "odds_ratio",
-          "source": "variants.odds_ratio"
-        },
-        {
-          "header": "variant_p_value",
+          "header": "P Value",
           "source": "variants.p_value"
         }
       ]

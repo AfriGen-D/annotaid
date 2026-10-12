@@ -6,3 +6,7 @@ __pycache__/
 
 references
 dist/
+
+# Local workshop and presentation materials
+presentation/
+demo-data/

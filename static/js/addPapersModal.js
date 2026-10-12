@@ -24,6 +24,7 @@ import { el } from "./dom.js";
 import { parsePmidText, describeParse } from "./pmidText.js";
 import { followJob, isActive, importItemView, extractItemView, jobProgress } from "./jobs.js";
 import { renderGroupItemsList } from "./groupItemsList.js";
+import { confirmAction } from "./dialog.js";
 
 const ROOT_ID = "addPdfModal";
 const SOFT_CAP = 100;      // warn above this, never block
@@ -922,8 +923,12 @@ export function openAddPapersModal(opts) {
         const editor = renderGroupItemsList(p.groupItems, {
           onChange: commit,
           onDuplicate: label => { message.textContent = `“${label}” is already in this group`; },
-          onRemove: item => window.confirm(
-            `Remove “${item.label || "this entry"}” from this paper's identified groups?`),
+          onRemove: item => confirmAction({ title: "Remove identifier", destructive: true,
+            confirmLabel: "Remove identifier",
+            message: `Remove “${item.label || "this entry"}” from this paper's identified groups?` }),
+          onBulkRemove: items => confirmAction({ title: "Remove identifiers", destructive: true,
+            confirmLabel: `Remove ${items.length} identifiers`,
+            message: `Remove ${items.length} selected identifiers from this paper?` }),
         });
         const add = el("button", "btn gi-add", "+ Add entry");
         add.type = "button";

@@ -41,31 +41,48 @@ test("assignee can locate group evidence and approved panel disappears", async (
   const page = await world.page(curator);
   await page.goto(`/p/${project.id}`);
   await expect(page.locator(".gi-panel")).toBeVisible();
-  await expect(page.locator(".gi-row input")).toHaveCount(1);
+  await expect(page.locator(".gi-row .gi-label-input")).toHaveCount(1);
+  const labelBox = await page.locator(".gi-panel .gi-label-input").boundingBox();
+  const deleteBox = await page.locator(".gi-panel .gi-row .fe-del").boundingBox();
+  expect(Math.abs((labelBox.y + labelBox.height / 2) -
+    (deleteBox.y + deleteBox.height / 2))).toBeLessThan(6);
   await page.locator(".gi-evidence").click();
   await expect(page.locator("#navlabel")).toContainText("rs1801133");
   await expect(page.locator(".hlLayer .hl")).toBeVisible();
 
   await page.locator(".gi-panel .gi-add").click();
-  const added = page.locator(".gi-panel .gi-row input").last();
+  const added = page.locator(".gi-panel .gi-label-input").last();
   await added.fill("EVA:eva123");
   const addSaved = page.waitForResponse(response =>
     response.url().includes("/group-items") && response.request().method() === "POST");
   await added.press("Tab");
   await addSaved;
-  await expect(page.locator(".gi-panel .gi-row input")).toHaveCount(2);
+  await expect(page.locator(".gi-panel .gi-label-input")).toHaveCount(2);
 
-  let removeMessage = "";
-  page.once("dialog", async dialog => {
-    removeMessage = dialog.message();
-    await dialog.accept();
-  });
+  await page.locator(".gi-panel .gi-row .fe-del").last().click();
+  await expect(page.locator(".dlg-overlay")).toContainText("Remove");
   const removeSaved = page.waitForResponse(response =>
     response.url().includes("/group-items") && response.request().method() === "POST");
-  await page.locator(".gi-panel .gi-row .fe-del").last().click();
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Remove identifier" }).click();
   await removeSaved;
-  expect(removeMessage).toContain("Remove");
-  await expect(page.locator(".gi-panel .gi-row input")).toHaveCount(1);
+  await expect(page.locator(".gi-panel .gi-label-input")).toHaveCount(1);
+
+  await page.locator(".gi-panel .gi-add").click();
+  const second = page.locator(".gi-panel .gi-label-input").last();
+  await second.fill("rs2222");
+  const secondSaved = page.waitForResponse(response =>
+    response.url().includes("/group-items") && response.request().method() === "POST");
+  await second.press("Tab");
+  await secondSaved;
+  await page.locator(".gi-panel .gi-select-all input").check();
+  await expect(page.locator(".gi-panel .gi-remove-selected")).toContainText("(2)");
+  await page.locator(".gi-panel .gi-remove-selected").click();
+  await expect(page.locator(".dlg-overlay")).toContainText("2 selected identifiers");
+  const bulkSaved = page.waitForResponse(response =>
+    response.url().includes("/group-items") && response.request().method() === "POST");
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Remove 2 identifiers" }).click();
+  await bulkSaved;
+  await expect(page.locator(".gi-panel .gi-label-input")).toHaveCount(0);
 
   await curatorApi.ok(
     "POST",
@@ -102,23 +119,19 @@ test("assignee can locate group evidence and approved panel disappears", async (
     });
   }, { uid: paper.uid, pmid: paper.pmid, items: saved.items });
   await expect(managerPage.locator("#addPdfModal .modal-head")).toContainText("Identify groups");
-  await expect(managerPage.locator(".group-preview-card .gi-row input")).toHaveValue("rs1801133");
+  await expect(managerPage.locator(".group-preview-card .gi-label-input")).toHaveValue("rs1801133");
 
   await managerPage.locator(".group-preview-card .gi-add").click();
-  const modalAdded = managerPage.locator(".group-preview-card .gi-row input").last();
+  const modalAdded = managerPage.locator(".group-preview-card .gi-label-input").last();
   await modalAdded.fill("rs2222");
   await modalAdded.press("Tab");
   await expect(managerPage.locator(".group-preview-message")).toHaveText("Saved");
-  await expect(managerPage.locator(".group-preview-card .gi-row input")).toHaveCount(2);
+  await expect(managerPage.locator(".group-preview-card .gi-label-input")).toHaveCount(2);
 
-  let modalRemoveMessage = "";
-  managerPage.once("dialog", async dialog => {
-    modalRemoveMessage = dialog.message();
-    await dialog.accept();
-  });
   await managerPage.locator(".group-preview-card .gi-row .fe-del").last().click();
-  expect(modalRemoveMessage).toContain("identified groups");
-  await expect(managerPage.locator(".group-preview-card .gi-row input")).toHaveCount(1);
+  await expect(managerPage.locator(".dlg-overlay")).toContainText("identified groups");
+  await managerPage.locator(".dlg-overlay").getByRole("button", { name: "Remove identifier" }).click();
+  await expect(managerPage.locator(".group-preview-card .gi-label-input")).toHaveCount(1);
 });
 
 test("deleting a post-extraction group warns when it has curated values", async ({ world }) => {
@@ -158,12 +171,90 @@ test("deleting a post-extraction group warns when it has curated values", async 
     ));
   });
 
-  let warning = "";
-  page.once("dialog", async dialog => {
-    warning = dialog.message();
-    await dialog.accept();
-  });
   await page.locator("#curated-delete-test .grp-row .fe-del").click();
-  expect(warning).toContain("already contains curated or confirmed values");
+  await expect(page.locator(".dlg-overlay")).toContainText("already contains curated or confirmed values");
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#curated-delete-test .grp-row")).toHaveCount(1);
+  await expect(page.locator("#curated-delete-test")).not.toHaveAttribute("data-changed", "yes");
+  await page.locator("#curated-delete-test .grp-row .fe-del").click();
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Remove entry" }).click();
   await expect(page.locator("#curated-delete-test")).toHaveAttribute("data-changed", "yes");
+});
+
+test("adding a group entry uses an app prompt with cancellation and required input", async ({ world }) => {
+  const manager = await world.user("manager");
+  const page = await world.page(manager);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { renderGroup } = await import("/js/groupEditor.js");
+    const host = document.createElement("div");
+    host.id = "group-prompt-test";
+    document.body.appendChild(host);
+    host.appendChild(renderGroup(
+      { name: "variants", type: "group", features: [] },
+      { present: false, rows: [] },
+      { openRowId: null, onOpenRow: () => {}, onEdit: () => {},
+        onStructureChange: () => { host.dataset.added = "yes"; },
+        onActivateEvidence: () => {}, onDeclareItem: async label => {
+          host.dataset.label = label;
+          return "new-row";
+        },
+        groupItemLabels: {}, readOnly: false, users: {} },
+    ));
+  });
+
+  await page.locator("#group-prompt-test .grp-add").click();
+  await expect(page.locator(".dlg-overlay")).toContainText("Identify this entry");
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#group-prompt-test")).not.toHaveAttribute("data-added", "yes");
+
+  await page.locator("#group-prompt-test .grp-add").click();
+  await page.locator(".dlg-overlay").getByRole("button", { name: "Add entry" }).click();
+  await expect(page.locator(".dlg-overlay .dlg-err")).toBeVisible();
+  await page.locator(".dlg-overlay .dlg-input").fill("rs789");
+  await page.locator(".dlg-overlay .dlg-input").press("Enter");
+  await expect(page.locator("#group-prompt-test")).toHaveAttribute("data-label", "rs789");
+  await expect(page.locator("#group-prompt-test")).toHaveAttribute("data-added", "yes");
+});
+
+test("variant identifiers show a working source icon only when discovery evidence exists", async ({ world }) => {
+  const manager = await world.user("manager");
+  const page = await world.page(manager);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    const { renderGroup } = await import("/js/groupEditor.js");
+    const host = document.createElement("div");
+    host.id = "identifier-evidence-test";
+    document.body.appendChild(host);
+    host.appendChild(renderGroup(
+      { name: "variants", type: "group", features: [] },
+      { present: true, rows: [
+        { rowId: "with-source", origin: "ai", features: {} },
+        { rowId: "without-source", origin: "ai", features: {} },
+      ] },
+      {
+        openRowId: null, onOpenRow: () => { host.dataset.opened = "yes"; },
+        onEdit: () => {}, onStructureChange: () => {},
+        onActivateEvidence: key => { host.dataset.evidence = key; },
+        groupItemLabels: { "with-source": "rs123", "without-source": "rs456" },
+        groupItemEvidence: { "with-source": "The rs123 variant was reported." },
+        readOnly: true, users: {},
+      },
+    ));
+  });
+
+  const rows = page.locator("#identifier-evidence-test .grp-row");
+  await expect(rows.first().locator(".rl-evidence")).toBeVisible();
+  await expect(rows.last().locator(".rl-evidence")).toHaveCount(0);
+  const buttonBox = await rows.first().locator(".rl-evidence").boundingBox();
+  const iconBox = await rows.first().locator(".rl-evidence svg").boundingBox();
+  expect(Math.abs((buttonBox.x + buttonBox.width / 2) -
+    (iconBox.x + iconBox.width / 2))).toBeLessThan(1);
+  expect(Math.abs((buttonBox.y + buttonBox.height / 2) -
+    (iconBox.y + iconBox.height / 2))).toBeLessThan(1);
+  await rows.first().locator(".rl-evidence").click();
+  await expect(page.locator("#identifier-evidence-test"))
+    .toHaveAttribute("data-evidence", "group-item@with-source");
+  await expect(page.locator("#identifier-evidence-test")).not.toHaveAttribute("data-opened", "yes");
 });

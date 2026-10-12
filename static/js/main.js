@@ -21,6 +21,7 @@ import { renderPaperBar, canEdit } from "./paperActions.js";
 import { followJob, isActive } from "./jobs.js";
 import { openJobsPanel } from "./jobsPanel.js";
 import { openTeamPanel } from "./teamPanel.js";
+import { confirmAction } from "./dialog.js";
 
 const S = {
   config: null,
@@ -657,6 +658,14 @@ function groupItemLabelsFor(p) {
   return out;
 }
 
+function groupItemEvidenceFor(p) {
+  const out = {};
+  for (const it of (p && p.groupItems) || []) {
+    if (it.rowId && it.evidence) out[it.rowId] = it.evidence;
+  }
+  return out;
+}
+
 function groupItemEvidenceKey(item, index) {
   return `group-item@${item.rowId || index}`;
 }
@@ -706,16 +715,39 @@ function groupItemHasCuratedValues(p, item) {
 function confirmGroupItemRemoval(p, item) {
   const label = item.label || "this entry";
   if (groupItemHasCuratedValues(p, item)) {
-    return window.confirm(
-      `Warning: “${label}” already contains curated or confirmed values. `
-      + "Removing its identifier can detach those values from this group. Continue?");
+    return confirmAction({ title: "Remove curated identifier", destructive: true,
+      confirmLabel: "Remove identifier",
+      message: `“${label}” already contains curated or confirmed values. `
+      + "Removing its identifier can detach those values from this group. Continue?" });
   }
   const hasRuns = Object.keys(S.runsByUid[p.uid] || {}).length > 0;
   if (hasRuns) {
-    return window.confirm(
-      `Remove “${label}”? Extracted values already saved for it may no longer show a label.`);
+    return confirmAction({ title: "Remove identifier", destructive: true,
+      confirmLabel: "Remove identifier",
+      message: `Remove “${label}”? Extracted values already saved for it may no longer show a label.` });
   }
-  return window.confirm(`Remove “${label}” from this paper's identified groups?`);
+  return confirmAction({ title: "Remove identifier", destructive: true,
+    confirmLabel: "Remove identifier",
+    message: `Remove “${label}” from this paper's identified groups?` });
+}
+
+function confirmBulkGroupItemRemoval(p, items) {
+  const count = items.length;
+  const curated = items.filter(item => groupItemHasCuratedValues(p, item)).length;
+  if (curated) {
+    return confirmAction({ title: "Remove curated identifiers", destructive: true,
+      confirmLabel: `Remove ${count} identifiers`,
+      message: `${curated} of the ${count} selected identifiers already contain curated or confirmed values. `
+      + "Removing them can detach those values from the group. Continue?" });
+  }
+  if (Object.keys(S.runsByUid[p.uid] || {}).length) {
+    return confirmAction({ title: "Remove identifiers", destructive: true,
+      confirmLabel: `Remove ${count} identifiers`,
+      message: `Remove ${count} selected identifiers? Extracted values already saved for them may no longer show a label.` });
+  }
+  return confirmAction({ title: "Remove identifiers", destructive: true,
+    confirmLabel: `Remove ${count} identifiers`,
+    message: `Remove ${count} selected identifiers from this paper?` });
 }
 
 async function removeDeclaredGroupItem(p, row) {
@@ -765,6 +797,7 @@ function renderGroupItemsPanel(p, groupDef) {
     onDuplicate: label => toast(`"${label}" is already in this group`),
     onActivateEvidence: (item, index) => viewer.activateFeature(groupItemEvidenceKey(item, index)),
     onRemove: item => confirmGroupItemRemoval(p, item),
+    onBulkRemove: items => confirmBulkGroupItemRemoval(p, items),
   });
 
   const addBtn = el("button", "btn gi-add", "+ Add entry");
@@ -898,6 +931,7 @@ function makeCard(run, fdef, isCard) {
       onStructureChange: () => onGroupStructureChange(run),
       onActivateEvidence: key => viewer.activateFeature(key),
       groupItemLabels: groupItemLabelsFor(paper(run.uid)),
+      groupItemEvidence: groupItemEvidenceFor(paper(run.uid)),
       onDeclareItem: label => declareGroupItem(paper(run.uid), label),
       onRemoveDeclaredItem: row => removeDeclaredGroupItem(paper(run.uid), row),
       readOnly,
@@ -1005,7 +1039,7 @@ function evidenceTargets(run) {
 }
 
 function groupReviewEvidenceTargets(p) {
-  if (!p || !p.groupItemsDiscovered || p.groupItemsReviewed) return [];
+  if (!p || !p.groupItemsDiscovered) return [];
   return (p.groupItems || []).map((item, index) => ({
     name: groupItemEvidenceKey(item, index),
     label: item.label,

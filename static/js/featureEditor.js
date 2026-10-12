@@ -31,7 +31,7 @@ function cleanList(arr) { return (arr || []).map(s => String(s).trim()).filter(B
 // live — reading a paper is still allowed.
 export function lockControls(root) {
   root.querySelectorAll("input, select, textarea, button").forEach(c => {
-    if (c.classList.contains("help-icon")) return;
+    if (c.classList.contains("help-icon") || c.classList.contains("rl-evidence")) return;
     c.disabled = true;
   });
   root.classList.add("readonly");

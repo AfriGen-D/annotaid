@@ -6,7 +6,7 @@
 // adding someone as a manager, and removing a manager.
 import { api } from "./api.js";
 import { el } from "./dom.js";
-import { openDialog, shortTime } from "./dialog.js";
+import { openDialog, confirmAction, shortTime } from "./dialog.js";
 
 const LINK_STATE = { valid: "active", expired: "expired", revoked: "revoked", used_up: "used up" };
 
@@ -90,7 +90,9 @@ export function openTeamPanel(ctx) {
         const rm = el("button", "btn job-btn", "Remove");
         rm.onclick = async () => {
           const held = m.inProgress ? ` Their ${m.inProgress} in-progress paper(s) go back to the pool.` : "";
-          if (!window.confirm(`Remove ${m.name} from this project?${held}`)) return;
+          if (!await confirmAction({ title: "Remove project member", destructive: true,
+            confirmLabel: "Remove member",
+            message: `Remove ${m.name} from this project?${held}` })) return;
           rm.disabled = true;
           memErr.hidden = true;
           try {
@@ -161,7 +163,9 @@ export function openTeamPanel(ctx) {
       if (l.state === "valid") {
         const rv = el("button", "btn job-btn", "Revoke");
         rv.onclick = async () => {
-          if (!window.confirm("Revoke this invite link? Anyone who has it will no longer be able to join.")) return;
+          if (!await confirmAction({ title: "Revoke invite link", destructive: true,
+            confirmLabel: "Revoke link",
+            message: "Revoke this invite link? Anyone who has it will no longer be able to join." })) return;
           rv.disabled = true;
           linkErr.hidden = true;
           try { await api.revokeLink(l.id); loadLinks(); }

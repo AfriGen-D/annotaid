@@ -7,11 +7,12 @@ import { el } from "./dom.js";
 const open = [];   // stack, so Escape closes only the topmost
 
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && open.length) { e.stopPropagation(); open[open.length - 1].close(); }
+  if (e.key === "Escape" && open.length) { e.stopImmediatePropagation(); open[open.length - 1].close(); }
 });
 
 /** -> {body, foot, close, setTitle}. `cls` adds a class to .modal (e.g. "wide"). */
 export function openDialog({ title, cls, onClose } = {}) {
+  const previousFocus = document.activeElement;
   const overlay = el("div", "modal-overlay dlg-overlay");
   const modal = el("div", "modal dlg" + (cls ? " " + cls : ""));
   modal.setAttribute("role", "dialog");
@@ -37,12 +38,68 @@ export function openDialog({ title, cls, onClose } = {}) {
       const i = open.indexOf(d);
       if (i >= 0) open.splice(i, 1);
       if (onClose) onClose();
+      if (previousFocus && previousFocus.isConnected) previousFocus.focus();
     },
   };
   x.onclick = d.close;
   overlay.addEventListener("mousedown", e => { if (e.target === overlay) d.close(); });
   open.push(d);
   return d;
+}
+
+/** A styled replacement for window.confirm. Resolves false on Cancel, ×, backdrop or Escape. */
+export function confirmAction({ title = "Confirm action", message, confirmLabel = "Confirm", destructive = false }) {
+  return new Promise(resolve => {
+    let accepted = false;
+    const d = openDialog({ title, onClose: () => resolve(accepted) });
+    d.body.appendChild(el("div", "dlg-text", message));
+    const acts = el("div", "step-actions");
+    const cancel = el("button", "btn", "Cancel");
+    const ok = el("button", "btn " + (destructive ? "danger" : "primary"), confirmLabel);
+    cancel.type = ok.type = "button";
+    cancel.onclick = d.close;
+    ok.onclick = () => { accepted = true; d.close(); };
+    acts.append(cancel, ok);
+    d.body.appendChild(acts);
+    setTimeout(() => cancel.focus(), 0);
+  });
+}
+
+/** A styled replacement for window.prompt. Resolves null on cancellation. */
+export function askText({ title, prompt, placeholder = "", confirmLabel = "Add", required = true }) {
+  return new Promise(resolve => {
+    let answer = null;
+    const d = openDialog({ title, onClose: () => resolve(answer) });
+    if (prompt) d.body.appendChild(el("div", "dlg-text", prompt));
+    const input = el("input", "dlg-input");
+    input.type = "text";
+    input.placeholder = placeholder;
+    d.body.appendChild(input);
+    const err = el("div", "dlg-err");
+    err.hidden = true;
+    d.body.appendChild(err);
+    const acts = el("div", "step-actions");
+    const cancel = el("button", "btn", "Cancel");
+    const ok = el("button", "btn primary", confirmLabel);
+    cancel.type = ok.type = "button";
+    cancel.onclick = d.close;
+    const commit = () => {
+      const value = input.value.trim();
+      if (required && !value) {
+        err.textContent = "Enter a value.";
+        err.hidden = false;
+        input.focus();
+        return;
+      }
+      answer = value;
+      d.close();
+    };
+    ok.onclick = commit;
+    input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); commit(); } };
+    acts.append(cancel, ok);
+    d.body.appendChild(acts);
+    setTimeout(() => input.focus(), 0);
+  });
 }
 
 /**

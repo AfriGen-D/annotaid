@@ -4,6 +4,7 @@
 // superadmins; nothing here is a security boundary. Names and emails are
 // user-supplied, so everything from the server goes in via textContent.
 import { renderUserMenu, toLogin } from "./session.js";
+import { confirmAction } from "./dialog.js";
 
 const $ = (s) => document.querySelector(s);
 
@@ -234,8 +235,10 @@ function pendingCard(u) {
     }
   }));
 
-  const reject = button("Reject", "btn", () => {
-    if (!confirm(`Reject the sign-up from ${u.name} (${u.email})? They won't be able to sign in.`)) return;
+  const reject = button("Reject", "btn", async () => {
+    if (!await confirmAction({ title: "Reject sign-up", destructive: true,
+      confirmLabel: "Reject sign-up",
+      message: `Reject the sign-up from ${u.name} (${u.email})? They won't be able to sign in.` })) return;
     busy(reject, async () => {
       msg.textContent = "";
       try {
@@ -311,8 +314,9 @@ function userRow(u) {
   });
 
   if (u.state === "active" || u.state === "deactivated") {
-    const reset = button("Reset password", "btn", () => {
-      if (!confirm(`Reset the password for ${u.name}? Their current password stops working and they are signed out everywhere.`)) return;
+    const reset = button("Reset password", "btn", async () => {
+      if (!await confirmAction({ title: "Reset password", confirmLabel: "Reset password",
+        message: `Reset the password for ${u.name}? Their current password stops working and they are signed out everywhere.` })) return;
       busy(reset, async () => {
         msg.textContent = "";
         try {
@@ -328,8 +332,10 @@ function userRow(u) {
   }
 
   if (u.state === "active") {
-    const deact = button("Deactivate", "btn", () => {
-      if (!confirm(`Deactivate ${u.name}? They are signed out at once and can't sign in until reactivated.`)) return;
+    const deact = button("Deactivate", "btn", async () => {
+      if (!await confirmAction({ title: "Deactivate account", destructive: true,
+        confirmLabel: "Deactivate account",
+        message: `Deactivate ${u.name}? They are signed out at once and can't sign in until reactivated.` })) return;
       busy(deact, async () => {
         msg.textContent = "";
         try {
@@ -453,8 +459,10 @@ function projectRow(p) {
       const x = button("×", "x");
       x.title = `Remove ${m.name} from this project`;
       x.setAttribute("aria-label", `Remove ${m.name} from this project`);
-      x.addEventListener("click", () => {
-        if (!confirm(`Remove ${m.name} from "${p.name}"? They leave the project, and any papers they have in progress go back to the pool.`)) return;
+      x.addEventListener("click", async () => {
+        if (!await confirmAction({ title: "Remove project manager", destructive: true,
+          confirmLabel: "Remove manager",
+          message: `Remove ${m.name} from "${p.name}"? They leave the project, and any papers they have in progress go back to the pool.` })) return;
         busy(x, async () => {
           msg.className = "row-msg";
           msg.textContent = "";
@@ -528,11 +536,13 @@ function projectRow(p) {
   acts.append(open);
 
   const action = archived ? "unarchive" : "archive";
-  const toggle = button(archived ? "Unarchive" : "Archive", "btn", () => {
+  const toggle = button(archived ? "Unarchive" : "Archive", "btn", async () => {
     const q = archived
       ? `Unarchive "${p.name}"? Its members will see it again.`
       : `Archive "${p.name}"? It disappears for everyone until you unarchive it.`;
-    if (!confirm(q)) return;
+    if (!await confirmAction({ title: archived ? "Unarchive project" : "Archive project",
+      destructive: !archived, confirmLabel: archived ? "Unarchive" : "Archive",
+      message: q })) return;
     busy(toggle, async () => {
       msg.className = "row-msg";
       msg.textContent = "";
